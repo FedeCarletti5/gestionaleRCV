@@ -1,0 +1,10 @@
+# Dati locali, segreti, database e allegati privati (MAI nel repository codice)
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.enc
+.env
+__pycache__/
+*.pyc
+.DS_Store

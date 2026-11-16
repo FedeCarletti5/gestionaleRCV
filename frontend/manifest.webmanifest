@@ -1,0 +1,19 @@
+{
+  "name": "Gestionale Personale Fisio + Fitness",
+  "short_name": "FisioFitness",
+  "description": "Gestionale personale per fisioterapia e personal training su Mac, iPad e iPhone.",
+  "lang": "it-IT",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f766e",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "./assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
