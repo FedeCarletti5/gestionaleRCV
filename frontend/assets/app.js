@@ -189,7 +189,7 @@ function showConflictResolutionModal(message, serverRecord, attemptedPayload) {
         Per evitare <strong>sovrascritture silenziose</strong>, il salvataggio è stato bloccato perché la versione sul server è già avanzata a <strong>v${esc(serverRecord.version)}</strong> (aggiornata il ${esc(formatRomeDateTime(serverRecord.updated_at))}).
       </p>
       <div class="grid-2" style="margin:14px 0;">
-        <div class="card" style="background:#f8fafc; margin:0;">
+        <div class="card" style="background:var(--bg-subtle); margin:0;">
           <h4 style="margin-top:0;">Stato attuale sul Server (v${esc(serverRecord.version)})</h4>
           <pre style="font-size:11.5px; white-space:pre-wrap; max-height:220px; overflow:auto;">${esc(JSON.stringify(serverRecord, null, 2))}</pre>
         </div>
@@ -289,7 +289,7 @@ async function renderDashboardView(container) {
 
   const nextPersonHtml = nextAppt
     ? `
-      <div class="card" style="border-left: 6px solid var(--primary); background: linear-gradient(to right, #f0fdfa, #ffffff);">
+      <div class="card" style="border-left: 6px solid var(--primary); background: linear-gradient(135deg, var(--primary-light), var(--bg-surface));">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
           <div>
             <span class="badge ${nextAppt.service_area === "fisio" ? "badge-physio" : "badge-fitness"}">
@@ -298,11 +298,11 @@ async function renderDashboardView(container) {
             <h2 style="margin:8px 0 4px 0; font-size:21px;" class="sensitive-data">
               ${esc(nextAppt.first_name)} ${esc(nextAppt.last_name)}
             </h2>
-            <div style="color:#334155; font-size:14px;">
+            <div style="color:var(--text-secondary); font-size:14px;">
               🕒 <strong>${formatRomeTime(nextAppt.start_at)} – ${formatRomeTime(nextAppt.end_at)}</strong>
               · ${esc(nextAppt.service_name)} · 📍 ${esc(nextAppt.location)}
             </div>
-            ${nextAppt.notes ? `<div style="margin-top:6px; font-size:13px; color:#475569;" class="sensitive-data">📝 ${esc(nextAppt.notes)}</div>` : ""}
+            ${nextAppt.notes ? `<div style="margin-top:6px; font-size:13px; color:var(--text-muted);" class="sensitive-data">📝 ${esc(nextAppt.notes)}</div>` : ""}
           </div>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button class="btn btn-primary" data-open-appt-drawer="${nextAppt.id}">⚡ Gestisci Seduta / Presenza</button>
@@ -650,7 +650,7 @@ async function renderPersonDossierView(container, personId) {
       </div>
     </div>
 
-    <div class="card" style="background:linear-gradient(to right, #0f172a, #1e293b); color:#ffffff;">
+    <div class="card" style="background:linear-gradient(135deg, #07101f, #102544); border:1px solid #274a73; color:#ffffff;">
       <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:14px;">
         <div>
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
@@ -1238,7 +1238,7 @@ function renderEvaluationAndBodyMapSection(ev, prevEval) {
     </div>
 
     <div class="grid-2 sensitive-data" style="margin-bottom:14px;">
-      <div style="background:#f8fafc; padding:12px; border-radius:8px; border:1px solid var(--border-color);">
+      <div style="background:var(--bg-subtle); padding:12px; border-radius:8px; border:1px solid var(--border-color);">
         <h4 style="margin:0 0 8px 0;">Anamnesi e Comportamento dei Sintomi</h4>
         <p style="margin:4px 0; font-size:13.5px;"><strong>Motivo consultazione:</strong> ${esc(ev.consult_reason || "-")}</p>
         <p style="margin:4px 0; font-size:13.5px;"><strong>Obiettivi e attività importanti:</strong> ${esc(ev.patient_goals || "-")} | ${esc(ev.important_activities || "-")}</p>
@@ -1249,7 +1249,7 @@ function renderEvaluationAndBodyMapSection(ev, prevEval) {
         <p style="margin:4px 0; font-size:13.5px;"><strong>Sonno, carico lavoro/sport e psicosociale:</strong> ${esc(ev.sleep_quality || "-")} | ${esc(ev.work_sport_load || "-")} | ${esc(ev.psychosocial_factors || "-")}</p>
       </div>
 
-      <div style="background:#f8fafc; padding:12px; border-radius:8px; border:1px solid var(--border-color);">
+      <div style="background:var(--bg-subtle); padding:12px; border-radius:8px; border:1px solid var(--border-color);">
         <h4 style="margin:0 0 8px 0;">Esame Obiettivo e Ragionamento Clinico</h4>
         <div class="table-wrap" style="margin-bottom:8px;">
           <table class="data-table">
@@ -1266,7 +1266,7 @@ function renderEvaluationAndBodyMapSection(ev, prevEval) {
     ${addendaHtml}
 
     <!-- Vista Doppia Mappa del Corpo (Anteriore + Posteriore) + Alternativa Testuale Accessibile -->
-    <div style="background:#f8fafc; padding:14px; border-radius:10px; border:1px solid var(--border-strong); margin-top:12px;">
+    <div style="background:var(--bg-subtle); padding:14px; border-radius:10px; border:1px solid var(--border-strong); margin-top:12px;">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
         <h4 style="margin:0;">🧍 Mappa Anatomica del Corpo 2D (Vista Anteriore &amp; Posteriore con Lateralità Esplicita)</h4>
         ${
@@ -1357,7 +1357,7 @@ function renderOutcomeMeasuresSection(comparisons, allMeasures) {
       const deltaStr =
         c.numeric_delta !== null ? (c.numeric_delta > 0 ? `+${c.numeric_delta}` : `${c.numeric_delta}`) : "N/A (1 sola rilevazione)";
       return `
-        <div style="padding:10px 12px; border:1px solid var(--border-color); border-radius:8px; margin-bottom:10px; background:#f8fafc;">
+        <div style="padding:10px 12px; border:1px solid var(--border-color); border-radius:8px; margin-bottom:10px; background:var(--bg-subtle);">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
             <div>
               <strong>${esc(c.scale_name)}</strong>
@@ -1394,7 +1394,7 @@ function renderClinicalNotesList(notes) {
         .join("");
 
       return `
-        <div style="border:1px solid var(--border-color); border-radius:8px; padding:12px; margin-bottom:10px; background:#fff;">
+        <div style="border:1px solid var(--border-color); border-radius:8px; padding:12px; margin-bottom:10px; background:var(--bg-surface);">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
             <div>
               <strong>Seduta del ${esc(n.note_date)}</strong>
@@ -1470,7 +1470,7 @@ function renderPersonTabFitness(viewport, dossier) {
       const daysHtml = (prog.workouts || [])
         .map(
           (d, dIdx) => `
-          <div style="background:#f8fafc; border:1px solid var(--border-color); border-radius:8px; padding:10px; margin-top:8px;">
+          <div style="background:var(--bg-subtle); border:1px solid var(--border-color); border-radius:8px; padding:10px; margin-top:8px;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
               <strong>🏋️ ${esc(d.day_name)}</strong>
               <button class="btn btn-sm btn-fitness" data-log-workout-prog="${prog.id}" data-day-idx="${dIdx}">⚡ Registra Seduta Svolta su questa scheda</button>
@@ -1534,7 +1534,7 @@ function renderPersonTabFitness(viewport, dossier) {
         .join("");
 
       return `
-        <div style="border:1px solid var(--border-color); border-radius:8px; padding:12px; margin-bottom:10px; background:#fff;">
+        <div style="border:1px solid var(--border-color); border-radius:8px; padding:12px; margin-bottom:10px; background:var(--bg-surface);">
           <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
             <div>
               <strong>✅ ${esc(wl.workout_day_name)}</strong> — Data: <strong>${esc(wl.session_date)}</strong>
@@ -1749,12 +1749,12 @@ function renderPersonTabPacchetti(viewport, dossier) {
 
           <!-- Relazione Matematica Chiara tra i Valori del Pacchetto -->
           <div class="grid-4" style="margin-bottom:12px;">
-            <div class="stat-card" style="background:#f8fafc;">
+            <div class="stat-card" style="background:var(--bg-subtle);">
               <div class="stat-label">1. Sedute Acquistate</div>
               <div class="stat-value">${pkg.total_sessions}</div>
               <div class="stat-sub">Capienza totale iniziale</div>
             </div>
-            <div class="stat-card" style="background:#f8fafc;">
+            <div class="stat-card" style="background:var(--bg-subtle);">
               <div class="stat-label">2. Consumate (Svolte)</div>
               <div class="stat-value">${pkg.consumed_sessions}</div>
               <div class="stat-sub">Somma movimenti netti</div>
@@ -1771,7 +1771,7 @@ function renderPersonTabPacchetti(viewport, dossier) {
             </div>
           </div>
 
-          <div style="background:#f8fafc; padding:10px 12px; border-radius:8px; margin-bottom:10px; display:flex; justify-content:space-between; flex-wrap:wrap;" class="sensitive-data">
+          <div style="background:var(--bg-subtle); padding:10px 12px; border-radius:8px; margin-bottom:10px; display:flex; justify-content:space-between; flex-wrap:wrap;" class="sensitive-data">
             <div><strong>Saldo Economico (distinto dal saldo sedute):</strong> Prezzo pattuito: <strong>${formatEur(pkg.price_cents)}</strong></div>
             <div>Incassato: <strong style="color:var(--success);">${formatEur(pkg.paid_cents)}</strong> · Residuo da incassare: <strong style="color:${pkg.due_cents > 0 ? "var(--danger)" : "var(--success)"};">${formatEur(pkg.due_cents)}</strong></div>
           </div>
@@ -1992,7 +1992,7 @@ async function renderAgendaView(container) {
         )
         .join("");
       dayCols.push(`
-        <div style="background:#fff; border:1px solid var(--border-color); border-radius:10px; padding:10px; min-height:220px;">
+        <div style="background:var(--bg-surface); border:1px solid var(--border-color); border-radius:10px; padding:10px; min-height:220px;">
           <div style="font-weight:800; font-size:13px; padding-bottom:6px; margin-bottom:8px; border-bottom:2px solid ${dStr === state.agendaDate ? "var(--primary)" : "var(--border-color)"};">
             ${esc(dayLabel.toUpperCase())}
           </div>
@@ -2010,7 +2010,7 @@ async function renderAgendaView(container) {
             const listItems = byDay[dKey]
               .map(
                 (a) => `
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding:12px; border:1px solid var(--border-color); border-radius:10px; margin-bottom:8px; background:#fff;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding:12px; border:1px solid var(--border-color); border-radius:10px; margin-bottom:8px; background:var(--bg-surface);">
                   <div>
                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                       <strong style="font-size:16px;">🕒 ${formatRomeTime(a.start_at)} – ${formatRomeTime(a.end_at)}</strong>
@@ -2081,7 +2081,7 @@ async function renderAgendaView(container) {
 
     ${calendarBodyHtml}
 
-    <div class="card" style="background:#f8fafc; font-size:12.5px; color:#475569;">
+    <div class="card" style="background:var(--bg-subtle); font-size:12.5px; color:#475569;">
       <strong>ℹ️ Nota sull'integrazione con Apple Calendar:</strong>
       L'agenda interna è la fonte principale. Il pulsante <em>Esporta .ics</em> genera un file standard iCalendar con <strong>sole iniziali</strong> (nessun dettaglio clinico o diagnosi nei titoli/notifiche). Nessun messaggio automatico viene mai inviato ai clienti.
     </div>
@@ -2227,7 +2227,7 @@ async function renderSecurityView(container) {
         <p style="font-size:13.5px; color:#334155;">
           Configura il segreto TOTP nella tua app di autenticazione (Apple Passwords, Google Authenticator, 1Password, Authy):
         </p>
-        <div style="background:#f8fafc; padding:10px; border-radius:6px; font-family:monospace; font-size:13px; border:1px solid var(--border-color); margin-bottom:10px;">
+        <div style="background:var(--bg-subtle); padding:10px; border-radius:6px; font-family:monospace; font-size:13px; border:1px solid var(--border-color); margin-bottom:10px;">
           <div><strong>Segreto Base32:</strong> ${esc(sec.totp_secret)}</div>
           <div style="font-size:11px; color:#64748b; word-break:break-all; margin-top:4px;">${esc(sec.otpauth_uri)}</div>
           ${
@@ -2514,7 +2514,7 @@ async function showAppointmentSessionDrawer(appointmentId) {
     }
 
     <!-- Azione Rapida Presenza / Stato Appuntamento (con protezione doppio clic / idempotenza) -->
-    <div class="card" style="background:#f8fafc;">
+    <div class="card" style="background:var(--bg-subtle);">
       <h4 style="margin:0 0 8px 0;">1. Stato Presenza e Consumo Pacchetto (Idempotente)</h4>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
         <button class="btn ${appt.status === "svolto" ? "btn-primary" : "btn-secondary"}" data-set-appt-status="svolto">
@@ -3107,7 +3107,7 @@ function showEvaluationModal(episode, existingEval = null, defaultType = "prima_
       </div>
 
       <!-- Editor Interattivo Mappa del Corpo 2D (Mouse & Touch Mac/iPad/iPhone) -->
-      <div class="card" style="background:#f8fafc; border:2px solid var(--physio-accent);">
+      <div class="card" style="background:var(--bg-subtle); border:2px solid var(--physio-accent);">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
           <h4 style="margin:0;">🧍 Mappa Interattiva del Corpo 2D (Tocca o clicca sulla silhouette per segnare punti o aree)</h4>
           <div style="display:flex; gap:6px; flex-wrap:wrap;">
@@ -3122,7 +3122,7 @@ function showEvaluationModal(episode, existingEval = null, defaultType = "prima_
         <div class="body-map-layout">
           <div class="body-map-stage" id="bmInteractiveStage"></div>
           <div>
-            <div style="background:#fff; padding:12px; border-radius:8px; border:1px solid var(--border-color); margin-bottom:10px;">
+            <div style="background:var(--bg-surface); padding:12px; border-radius:8px; border:1px solid var(--border-color); margin-bottom:10px;">
               <h5 style="margin:0 0 8px 0;">Impostazioni Pennello / Marcatore</h5>
               <div class="grid-2">
                 <div class="form-group">
@@ -3156,7 +3156,7 @@ function showEvaluationModal(episode, existingEval = null, defaultType = "prima_
             </div>
 
             <!-- Inserimento manuale/testuale accessibile e lista marcatori -->
-            <div style="background:#fff; padding:12px; border-radius:8px; border:1px solid var(--border-color);">
+            <div style="background:var(--bg-surface); padding:12px; border-radius:8px; border:1px solid var(--border-color);">
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                 <h5 style="margin:0;">Punti/Aree Segnate (<span id="bmMarkersCount">0</span>)</h5>
                 <button type="button" class="btn btn-sm btn-secondary" id="bmAddTextualMarkerBtn">➕ Aggiungi da Tastiera</button>
@@ -3542,7 +3542,7 @@ function showRecordOutcomeModal(episodeId, evaluationId = null) {
         <input class="form-control" type="number" step="0.1" name="score_value" placeholder="Es. 5" />
       </div>
 
-      <div id="psfsItemsBox" style="display:none; background:#f8fafc; padding:12px; border-radius:8px; margin-bottom:12px;">
+      <div id="psfsItemsBox" style="display:none; background:var(--bg-subtle); padding:12px; border-radius:8px; margin-bottom:12px;">
         <h5 style="margin:0 0 8px 0;">Attività Specifiche PSFS (Lascia vuoto il punteggio se un item non è valutato: non verrà contato come 0)</h5>
         <div class="grid-2">
           <input class="form-control" name="psfs_act_1" placeholder="Attività 1 (es. Correre 10 km)" />
@@ -4312,6 +4312,18 @@ function showUploadAttachmentModal(personId) {
 // INIZIALIZZAZIONE APP, RICERCA GLOBALE, PRIVACY MODE E SERVICE WORKER
 // ============================================================================
 
+function applyTheme(theme) {
+  const mode = theme === "light" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", mode);
+  try {
+    localStorage.setItem("gestionale_rcv_theme", mode);
+  } catch {}
+  const btn = document.getElementById("themeToggleBtn");
+  if (btn) {
+    btn.textContent = mode === "dark" ? "☀️ Tema Chiaro" : "🌙 Tema Scuro";
+  }
+}
+
 function togglePrivacyMode(forceValue = null) {
   state.privacyMode = forceValue !== null ? forceValue : !state.privacyMode;
   document.body.classList.toggle("privacy-mode", state.privacyMode);
@@ -4322,6 +4334,9 @@ function togglePrivacyMode(forceValue = null) {
 }
 
 async function initApp() {
+  const savedTheme = (typeof localStorage !== "undefined" && localStorage.getItem("gestionale_rcv_theme")) || "dark";
+  applyTheme(savedTheme);
+
   // Registra Service Worker Online-First (solo asset statici, mai cartelle cliniche)
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
@@ -4375,7 +4390,11 @@ async function initApp() {
     });
   });
 
-  // Binding Privacy Mode
+  // Binding Tema e Privacy Mode
+  document.getElementById("themeToggleBtn")?.addEventListener("click", () => {
+    const curr = document.documentElement.getAttribute("data-theme") || "dark";
+    applyTheme(curr === "dark" ? "light" : "dark");
+  });
   document.getElementById("privacyToggleBtn")?.addEventListener("click", () => togglePrivacyMode());
   document.getElementById("disablePrivacyBtn")?.addEventListener("click", () => togglePrivacyMode(false));
 

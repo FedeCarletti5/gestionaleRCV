@@ -1,5 +1,5 @@
 // Service Worker Online-First — NON salva mai cartelle cliniche o risposte API nella cache offline
-const STATIC_CACHE = "gestionale-rcv-static-v3";
+const STATIC_CACHE = "gestionale-rcv-static-v4";
 const STATIC_ASSETS = [
   "./assets/styles.css",
   "./assets/body_map.js",

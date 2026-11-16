@@ -1,5 +1,76 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-  <rect width="256" height="256" rx="52" fill="#0f172a"/>
-  <circle cx="128" cy="128" r="108" fill="none" stroke="#14b8a6" stroke-width="6" opacity="0.45"/>
-  <text x="128" y="148" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-weight="800" font-size="76" fill="#14b8a6">RCV</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Sfondo Navy profondo identico a FisioBrief e Athlete Data (#07101f) -->
+    <radialGradient id="bgGlow" cx="50%" cy="48%" r="58%">
+      <stop offset="0%" stop-color="#0d213f"/>
+      <stop offset="65%" stop-color="#071224"/>
+      <stop offset="100%" stop-color="#050b16"/>
+    </radialGradient>
+
+    <!-- Gradiente Principale Electric Blue -> Cyan -> Aqua Mint (#0873ed -> #0cc9b0) -->
+    <linearGradient id="brandGrad" x1="14%" y1="16%" x2="86%" y2="88%">
+      <stop offset="0%" stop-color="#0564e0"/>
+      <stop offset="46%" stop-color="#0c92ff"/>
+      <stop offset="80%" stop-color="#0ec5d8"/>
+      <stop offset="100%" stop-color="#0cc9b0"/>
+    </linearGradient>
+
+    <!-- Gradiente Emblema Destro (Cyan -> Aqua Mint brillante) -->
+    <linearGradient id="mintGrad" x1="20%" y1="15%" x2="88%" y2="90%">
+      <stop offset="0%" stop-color="#14a8ff"/>
+      <stop offset="52%" stop-color="#0dc4de"/>
+      <stop offset="100%" stop-color="#0cc9b0"/>
+    </linearGradient>
+
+    <mask id="cardCutout">
+      <rect width="1024" height="1024" fill="white"/>
+      <!-- Angolo piegato in alto a destra con gap netto -->
+      <path d="M 508 120 L 720 120 L 720 344 L 584 344 Q 508 344 508 268 Z" fill="black"/>
+      <!-- Avatar Persona (Gestionale Clienti) -->
+      <circle cx="348" cy="306" r="44" fill="black"/>
+      <path d="M 264 422 C 264 372 302 358 348 358 C 394 358 432 372 432 422 Z" fill="black"/>
+      <!-- 3 Linee Cartella in negativo -->
+      <rect x="264" y="476" width="168" height="36" rx="18" fill="black"/>
+      <rect x="264" y="556" width="144" height="36" rx="18" fill="black"/>
+      <rect x="264" y="636" width="112" height="36" rx="18" fill="black"/>
+      <!-- Knockout circolare per l'emblema Fisio + Fitness -->
+      <circle cx="638" cy="608" r="246" fill="black"/>
+    </mask>
+  </defs>
+
+  <!-- 1. Sfondo pieno Navy #07101f -->
+  <rect width="1024" height="1024" fill="url(#bgGlow)"/>
+
+  <!-- 2. Scheda Gestionale / Persona (Flat 2D Vector) -->
+  <g mask="url(#cardCutout)">
+    <path d="M 320 156 L 516 156 L 684 324 L 684 700 Q 684 824 560 824 L 320 824 Q 196 824 196 700 L 196 280 Q 196 156 320 156 Z" fill="url(#brandGrad)"/>
+  </g>
+
+  <!-- Triangolo piegato in alto a destra -->
+  <path d="M 540 162 L 678 300 L 586 300 Q 540 300 540 254 Z" fill="url(#mintGrad)"/>
+
+  <!-- 3. Emblema Circolare Fisio (Vertebre) + Fitness (Swoosh/Checkmark) -->
+  <circle cx="638" cy="608" r="204" fill="none" stroke="url(#mintGrad)" stroke-width="44"/>
+
+  <!-- 3 Vertebre organiche 2D (stile FisioBrief) -->
+  <g fill="url(#mintGrad)">
+    <!-- Vertebra 1 -->
+    <path d="M 534 456 C 556 464 584 466 610 462 C 624 460 634 470 632 484 L 626 518 C 624 532 612 538 596 534 C 572 528 548 528 528 534 C 516 536 510 526 514 512 L 522 472 C 524 460 528 454 534 456 Z"/>
+    <rect x="618" y="485" width="38" height="22" rx="11"/>
+    <circle cx="656" cy="496" r="18"/>
+
+    <!-- Vertebra 2 -->
+    <path d="M 526 548 C 548 556 576 558 602 554 C 616 552 626 562 624 576 L 618 610 C 616 624 604 630 588 626 C 564 620 540 620 520 626 C 508 628 502 618 506 604 L 514 564 C 516 552 520 546 526 548 Z"/>
+    <rect x="610" y="577" width="38" height="22" rx="11"/>
+    <circle cx="648" cy="588" r="18"/>
+
+    <!-- Vertebra 3 -->
+    <path d="M 532 640 C 554 648 582 650 608 646 C 622 644 632 654 630 668 L 624 702 C 622 716 610 722 594 718 C 570 712 546 712 526 718 C 514 720 508 710 512 696 L 520 656 C 522 644 526 638 532 640 Z"/>
+    <rect x="616" y="669" width="38" height="22" rx="11"/>
+    <circle cx="654" cy="680" r="18"/>
+  </g>
+
+  <!-- Swoosh / Checkmark Atletico (stile Athlete Data) con knockout netto -->
+  <path d="M 594 734 L 648 788 L 858 508" fill="none" stroke="#071224" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 594 734 L 648 788 L 858 508" fill="none" stroke="#0cc9b0" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
