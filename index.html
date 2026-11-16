@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f766e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="FisioFitness" />
+  <title>Gestionale Personale — Fisioterapia &amp; Personal Training</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./assets/icon.svg" />
+  <link rel="stylesheet" href="./assets/styles.css" />
+</head>
+<body>
+  <!-- Banner Modalità Privacy attiva -->
+  <div class="privacy-banner" id="privacyBanner">
+    <span>👁️‍🗨️ MODALITÀ PRIVACY ATTIVA — Dati clinici, cognomi e importi offuscati per schermo visibile ad altri</span>
+    <button class="btn btn-sm btn-secondary" id="disablePrivacyBtn">Ripristina visibilità</button>
+  </div>
+
+  <!-- Schermata di Login (visibile quando non autenticato) -->
+  <div id="loginScreen" class="modal-backdrop" style="display:none; background:#0f172a;">
+    <div class="modal-panel" style="max-width:440px;">
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+        <div class="brand-logo" style="width:44px; height:44px; font-size:18px;">FF</div>
+        <div>
+          <h1 style="margin:0; font-size:19px;">Gestionale Fisio + Fitness</h1>
+          <div style="font-size:12px; color:#64748b;">Accesso riservato al professionista · Registrazione pubblica disabilitata</div>
+        </div>
+      </div>
+      <div id="loginEnvNotice" class="badge badge-success" style="margin-bottom:14px; display:inline-flex;">
+        ☁️ Ambiente PROD · Database Cloud Supabase attivo
+      </div>
+      <form id="loginForm">
+        <div class="form-group">
+          <label class="form-label" for="loginUsername">Utente</label>
+          <input class="form-control" id="loginUsername" name="username" type="text" value="admin" autocomplete="username" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="loginPassword">Password</label>
+          <input class="form-control" id="loginPassword" name="password" type="password" value="FisioFitness2026!" autocomplete="current-password" required />
+        </div>
+        <div class="form-group" id="loginTotpGroup" style="display:none;">
+          <label class="form-label" for="loginTotp">Codice 2FA (TOTP 6 cifre o codice di recupero)</label>
+          <input class="form-control" id="loginTotp" name="totp_code" type="text" placeholder="Es. 123456" autocomplete="one-time-code" />
+        </div>
+        <div id="loginError" style="color:#b91c1c; font-size:13px; font-weight:600; margin-bottom:10px; display:none;"></div>
+        <button type="submit" class="btn btn-primary" style="width:100%;">Accedi in sicurezza</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- App Shell principale -->
+  <div class="app-shell" id="appShell" style="display:none;">
+    <!-- Sidebar Desktop / iPad -->
+    <aside class="sidebar" aria-label="Menu principale">
+      <div class="sidebar-brand">
+        <div class="brand-logo">FF</div>
+        <div>
+          <div class="brand-title">Fisio + Fitness</div>
+          <div class="brand-subtitle" id="sidebarEnvBadge">Ambiente DEMO</div>
+        </div>
+      </div>
+      <ul class="nav-list">
+        <li><button class="nav-btn active" data-nav="dashboard">📋 Oggi &amp; Dashboard</button></li>
+        <li><button class="nav-btn" data-nav="agenda">📅 Agenda Unificata</button></li>
+        <li><button class="nav-btn" data-nav="people">👥 Persone (Anagrafica)</button></li>
+        <li><button class="nav-btn" data-nav="packages">🎟️ Pacchetti &amp; Incassi</button></li>
+        <li><button class="nav-btn" data-nav="security">🔒 Sicurezza, Backup &amp; GDPR</button></li>
+      </ul>
+      <div class="sidebar-footer">
+        <div id="practitionerLabel" style="font-weight:600; color:#e2e8f0; margin-bottom:6px;">Professionista</div>
+        <div>Fuso: <strong>Europe/Rome</strong></div>
+        <button class="btn btn-sm btn-ghost" id="logoutBtn" style="width:100%; margin-top:10px; color:#cbd5e1; border-color:#334155;">Esci dalla sessione</button>
+      </div>
+    </aside>
+
+    <!-- Area Contenuto Principale -->
+    <div class="main-area">
+      <!-- Topbar con ricerca globale, stato salvataggio e modalità privacy -->
+      <header class="topbar">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input
+            type="search"
+            id="globalSearchInput"
+            class="search-input"
+            placeholder="Ricerca rapida persona (nome, tel, sport, CF)..."
+            aria-label="Ricerca rapida persona"
+          />
+          <div id="globalSearchDropdown" class="search-dropdown" style="display:none;"></div>
+        </div>
+
+        <div class="topbar-actions">
+          <span id="saveStatusIndicator" class="save-status-pill saved" role="status" aria-live="polite">
+            ✓ Online · Sincronizzato
+          </span>
+          <button class="btn btn-sm btn-secondary" id="privacyToggleBtn" title="Nascondi dati sensibili quando lo schermo è visibile ad altri">
+            👁️ Oscura dati sensibili
+          </button>
+        </div>
+      </header>
+
+      <!-- Barra Azioni Rapide Evidenti -->
+      <div class="quick-actions-bar" role="toolbar" aria-label="Azioni rapide">
+        <button class="btn btn-sm btn-primary" id="qaNewPersonBtn">➕ Nuova Persona</button>
+        <button class="btn btn-sm btn-secondary" id="qaNewApptBtn">📅 Nuovo Appuntamento</button>
+        <button class="btn btn-sm btn-physio" id="qaNewEvalBtn">🩺 Nuova Valutazione Fisio</button>
+        <button class="btn btn-sm btn-fitness" id="qaLogSessionBtn">🏋️ Registra Seduta</button>
+        <button class="btn btn-sm btn-secondary" id="qaNewPackageBtn">🎟️ Nuovo Pacchetto</button>
+      </div>
+
+      <!-- Contenitore Vista Dinamica -->
+      <main class="content-container" id="mainViewContainer"></main>
+    </div>
+
+    <!-- Bottom Navigation per iPhone -->
+    <nav class="mobile-bottom-nav" aria-label="Navigazione mobile">
+      <button class="mobile-nav-btn active" data-nav="dashboard"><span>📋</span><span>Oggi</span></button>
+      <button class="mobile-nav-btn" data-nav="agenda"><span>📅</span><span>Agenda</span></button>
+      <button class="mobile-nav-btn" data-nav="people"><span>👥</span><span>Persone</span></button>
+      <button class="mobile-nav-btn" data-nav="packages"><span>🎟️</span><span>Pacchetti</span></button>
+      <button class="mobile-nav-btn" data-nav="security"><span>🔒</span><span>Sicurezza</span></button>
+    </nav>
+  </div>
+
+  <!-- Contenitore Modali Operativi e Risoluzione Conflitti 409 -->
+  <div id="modalContainer" class="modal-backdrop" style="display:none;">
+    <div class="modal-panel" id="modalContent"></div>
+  </div>
+
+  <script type="module" src="./assets/app.js"></script>
+</body>
+</html>
