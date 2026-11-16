@@ -1,7 +1,7 @@
 {
-  "name": "Gestionale Personale Fisio + Fitness",
-  "short_name": "FisioFitness",
-  "description": "Gestionale personale per fisioterapia e personal training su Mac, iPad e iPhone.",
+  "name": "GestionaleRCV",
+  "short_name": "GestionaleRCV",
+  "description": "GestionaleRCV — Fisioterapia e Personal Training su Mac, iPad e iPhone.",
   "lang": "it-IT",
   "start_url": "./",
   "display": "standalone",
@@ -10,10 +10,16 @@
   "orientation": "any",
   "icons": [
     {
+      "src": "./assets/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
       "src": "./assets/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-  <rect width="256" height="256" rx="52" fill="#0f766e"/>
-  <path d="M72 76h44v32H72v36h40v36H72v-36H48v-32h24V76zm80 0h56v32h-24v36h24v36h-56v-36h16v-36h-16V76z" fill="#ffffff"/>
-  <circle cx="128" cy="128" r="108" fill="none" stroke="#5eead4" stroke-width="6" opacity="0.45"/>
+  <rect width="256" height="256" rx="52" fill="#0f172a"/>
+  <circle cx="128" cy="128" r="108" fill="none" stroke="#14b8a6" stroke-width="6" opacity="0.45"/>
+  <text x="128" y="148" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-weight="800" font-size="76" fill="#14b8a6">RCV</text>
 </svg>
