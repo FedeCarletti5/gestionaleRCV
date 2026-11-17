@@ -408,7 +408,7 @@ async function renderDashboardView(container) {
   container.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
       <div>
-        <h1 style="margin:0; font-size:22px;">Cruscotto Operativo della Giornata</h1>
+        <h1 style="margin:0; font-size:22px;">Oggi in Studio</h1>
         <div style="font-size:13px; color:#64748b;">Data selezionata: <strong>${esc(data.date)}</strong> · Fuso: Europe/Rome</div>
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
@@ -647,6 +647,7 @@ async function renderPersonDossierView(container, personId) {
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <a class="btn btn-sm btn-secondary" href="${esc(buildAuthUrl(`/api/people/${p.id}/export-pdf`))}" target="_blank">🖨️ Scheda PDF / Stampa</a>
         <a class="btn btn-sm btn-secondary" href="${esc(buildAuthUrl(`/api/people/${p.id}/export.json`))}" target="_blank">⬇️ Esporta Dati JSON</a>
+        <button class="btn btn-sm btn-danger" id="deletePersonBtn">🗑️ Elimina Anagrafica</button>
       </div>
     </div>
 
@@ -690,6 +691,19 @@ async function renderPersonDossierView(container, personId) {
   `;
 
   document.getElementById("backToPeopleListBtn")?.addEventListener("click", async () => {
+    state.selectedPersonId = null;
+    await renderPeopleListView(container);
+  });
+  document.getElementById("deletePersonBtn")?.addEventListener("click", async () => {
+    const fullName = `${p.first_name || ""} ${p.last_name || ""}`.trim();
+    if (
+      !window.confirm(
+        `Eliminare definitivamente l'anagrafica di ${fullName}?\n\nQuesta azione rimuoverà anche appuntamenti, valutazioni, programmi, pacchetti e allegati collegati.`
+      )
+    ) {
+      return;
+    }
+    await apiFetch(`/api/people/${p.id}`, { method: "DELETE" });
     state.selectedPersonId = null;
     await renderPeopleListView(container);
   });
@@ -2215,6 +2229,44 @@ async function renderSecurityView(container) {
       <div style="font-size:13px; color:#64748b;">Ambiente attivo: <strong>${esc(sec.env_mode.toUpperCase())}</strong> · Registrazione pubblica disabilitata</div>
     </div>
 
+    <!-- Credenziali Account (Username, Nome Visualizzato, Password) -->
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header">
+        <h3 class="card-title">👤 Credenziali Account (Username e Password)</h3>
+        <span class="badge badge-neutral">Utente: ${esc(sec.username || state.user?.username || "")}</span>
+      </div>
+      <form id="updateCredentialsForm">
+        <div class="grid-3">
+          <div class="form-group">
+            <label class="form-label">Nome utente (Username)</label>
+            <input class="form-control" id="credUsernameInput" value="${esc(sec.username || state.user?.username || "")}" required minlength="3" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Nome visualizzato</label>
+            <input class="form-control" id="credDisplayNameInput" value="${esc(sec.display_name || state.user?.display_name || "")}" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Password attuale (richiesta per salvare)</label>
+            <input type="password" class="form-control" id="credCurrentPasswordInput" placeholder="Password attuale" required autocomplete="current-password" />
+          </div>
+        </div>
+        <div class="grid-2" style="margin-top:8px;">
+          <div class="form-group">
+            <label class="form-label">Nuova password (opzionale, min. 10 caratteri)</label>
+            <input type="password" class="form-control" id="credNewPasswordInput" placeholder="Lascia vuoto per non cambiarla" autocomplete="new-password" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Conferma nuova password</label>
+            <input type="password" class="form-control" id="credConfirmPasswordInput" placeholder="Ripeti la nuova password" autocomplete="new-password" />
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:8px;">
+          <div id="credentialsResultBox" style="font-size:13px;"></div>
+          <button type="submit" class="btn btn-primary">💾 Salva Credenziali</button>
+        </div>
+      </form>
+    </div>
+
     <div class="grid-2">
       <!-- 2FA TOTP -->
       <div class="card">
@@ -2285,6 +2337,48 @@ async function renderSecurityView(container) {
       </ul>
     </div>
   `;
+
+  document.getElementById("updateCredentialsForm")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const box = document.getElementById("credentialsResultBox");
+    const username = document.getElementById("credUsernameInput").value.trim();
+    const displayName = document.getElementById("credDisplayNameInput").value.trim();
+    const currentPassword = document.getElementById("credCurrentPasswordInput").value;
+    const newPassword = document.getElementById("credNewPasswordInput").value;
+    const confirmPassword = document.getElementById("credConfirmPasswordInput").value;
+
+    if (newPassword && newPassword !== confirmPassword) {
+      if (box) {
+        box.innerHTML = `<span style="color:var(--danger); font-weight:600;">Le nuove password non coincidono.</span>`;
+      }
+      return;
+    }
+
+    try {
+      const res = await apiFetch("/api/security/credentials", {
+        method: "POST",
+        body: {
+          username,
+          display_name: displayName,
+          current_password: currentPassword,
+          new_password: newPassword
+        }
+      });
+      if (state.user) {
+        state.user.username = res.username;
+        state.user.display_name = res.display_name;
+      }
+      await renderSecurityView(container);
+      const updatedBox = document.getElementById("credentialsResultBox");
+      if (updatedBox) {
+        updatedBox.innerHTML = `<span style="color:#15803d; font-weight:600;">✓ Credenziali aggiornate con successo!</span>`;
+      }
+    } catch (err) {
+      if (box) {
+        box.innerHTML = `<span style="color:var(--danger); font-weight:600;">${esc(err.message || "Errore durante l'aggiornamento.")}</span>`;
+      }
+    }
+  });
 
   document.getElementById("toggleTotpForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();

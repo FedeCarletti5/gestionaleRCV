@@ -1192,6 +1192,8 @@ Deno.serve(async (req: Request) => {
         const otpauthUri = `otpauth://totp/GestionaleFisioFitness:${encodeURIComponent(user.username)}?secret=${user.totp_secret}&issuer=GestionaleFisioFitness&algorithm=SHA1&digits=6&period=30`;
         return jsonResponse(200, {
           env_mode: "prod",
+          username: user.username,
+          display_name: user.display_name,
           totp_enabled: Boolean(user.totp_enabled),
           totp_secret: user.totp_secret,
           otpauth_uri: otpauthUri,
@@ -2420,6 +2422,52 @@ Deno.serve(async (req: Request) => {
       const newHash = await hashPassword(newPwd);
       await sql`UPDATE public.users SET password_hash = ${newHash}, updated_at = ${nowRomeIso()} WHERE id = ${user.id}`;
       return jsonResponse(200, { updated: true });
+    }
+
+    if (path === "/api/security/credentials" && method === "POST") {
+      const currPwd = payload.current_password || "";
+      const [user] = await sql`SELECT * FROM public.users WHERE id = ${session.user_id}`;
+      if (!(await verifyPassword(currPwd, user.password_hash))) {
+        throw new ValidationError("La password attuale non è corretta.");
+      }
+
+      const newUsername = String(payload.username || "").trim();
+      const newDisplayName = String(payload.display_name || "").trim();
+      const newPwd = payload.new_password || "";
+
+      if (!newUsername) {
+        throw new ValidationError("Il nome utente non può essere vuoto.");
+      }
+      if (newUsername.length < 3 || /\s/.test(newUsername)) {
+        throw new ValidationError("Il nome utente deve avere almeno 3 caratteri e non contenere spazi.");
+      }
+      if (newUsername !== user.username) {
+        const existing = await sql`SELECT id FROM public.users WHERE username = ${newUsername} AND id != ${user.id}`;
+        if (existing.length > 0) {
+          throw new ValidationError("Questo nome utente è già in uso.");
+        }
+      }
+      if (newPwd && newPwd.length < 10) {
+        throw new ValidationError("La nuova password deve contenere almeno 10 caratteri.");
+      }
+
+      const finalDisplayName = newDisplayName || user.display_name;
+      const finalPwdHash = newPwd ? await hashPassword(newPwd) : user.password_hash;
+
+      if (newUsername === user.username && finalDisplayName === user.display_name && !newPwd) {
+        throw new ValidationError("Nessuna modifica rilevata: aggiorna username, nome visualizzato o nuova password.");
+      }
+
+      await sql`
+        UPDATE public.users
+        SET username = ${newUsername}, display_name = ${finalDisplayName}, password_hash = ${finalPwdHash}, updated_at = ${nowRomeIso()}
+        WHERE id = ${user.id}
+      `;
+      return jsonResponse(200, {
+        updated: true,
+        username: newUsername,
+        display_name: finalDisplayName,
+      });
     }
 
     if (path === "/api/security/backups" && method === "POST") {

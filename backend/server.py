@@ -520,6 +520,8 @@ class GestionaleHTTPHandler(BaseHTTPRequestHandler):
                 200,
                 {
                     "env_mode": get_env_mode(),
+                    "username": user["username"],
+                    "display_name": user["display_name"],
                     "totp_enabled": bool(user["totp_enabled"]),
                     "totp_secret": user["totp_secret"],
                     "otpauth_uri": build_otpauth_uri(user["totp_secret"], user["username"]),
@@ -929,6 +931,69 @@ class GestionaleHTTPHandler(BaseHTTPRequestHandler):
                 log_audit(conn, "CHANGE_PASSWORD", "users", user["id"], None, "Password account aggiornata", actor=actor)
                 conn.commit()
                 self._send_json(200, {"updated": True})
+                return
+
+            if path == "/api/security/credentials" and method == "POST":
+                curr_pwd = payload.get("current_password") or ""
+                user = row_to_dict(conn.execute("SELECT * FROM users WHERE id = ?", (session["user_id"],)).fetchone())
+                if not verify_password(curr_pwd, user["password_hash"]):
+                    raise ValidationError("La password attuale non è corretta.")
+
+                new_username = (payload.get("username") or "").strip()
+                new_display_name = (payload.get("display_name") or "").strip()
+                new_pwd = payload.get("new_password") or ""
+
+                if not new_username:
+                    raise ValidationError("Il nome utente non può essere vuoto.")
+                if len(new_username) < 3 or any(ch.isspace() for ch in new_username):
+                    raise ValidationError("Il nome utente deve avere almeno 3 caratteri e non contenere spazi.")
+                if new_username != user["username"]:
+                    existing = conn.execute(
+                        "SELECT id FROM users WHERE username = ? AND id != ?",
+                        (new_username, user["id"]),
+                    ).fetchone()
+                    if existing:
+                        raise ValidationError("Questo nome utente è già in uso.")
+
+                if new_pwd and len(new_pwd) < 10:
+                    raise ValidationError("La nuova password deve contenere almeno 10 caratteri.")
+
+                final_display_name = new_display_name or user["display_name"]
+                final_pwd_hash = hash_password(new_pwd) if new_pwd else user["password_hash"]
+
+                changed_fields = []
+                if new_username != user["username"]:
+                    changed_fields.append(f"username -> {new_username}")
+                if final_display_name != user["display_name"]:
+                    changed_fields.append(f"nome visualizzato -> {final_display_name}")
+                if new_pwd:
+                    changed_fields.append("password")
+
+                if not changed_fields:
+                    raise ValidationError("Nessuna modifica rilevata: aggiorna username, nome visualizzato o nuova password.")
+
+                conn.execute(
+                    "UPDATE users SET username = ?, display_name = ?, password_hash = ?, updated_at = ? WHERE id = ?",
+                    (new_username, final_display_name, final_pwd_hash, now_rome_iso(), user["id"]),
+                )
+                log_audit(
+                    conn,
+                    "UPDATE_CREDENTIALS",
+                    "users",
+                    user["id"],
+                    None,
+                    f"Aggiornate credenziali account ({', '.join(changed_fields)})",
+                    actor=final_display_name,
+                )
+                conn.commit()
+                self._send_json(
+                    200,
+                    {
+                        "updated": True,
+                        "username": new_username,
+                        "display_name": final_display_name,
+                    },
+                )
                 return
 
             if path == "/api/security/backups" and method == "POST":

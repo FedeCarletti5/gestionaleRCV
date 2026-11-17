@@ -697,6 +697,34 @@ class GestionaleAcceptanceTestSuite(unittest.TestCase):
         self.assertIn(b"@media (max-width: 767px)", css_raw)
         self.assertIn(b".mobile-bottom-nav", css_raw)
 
+        # Verifica aggiornamento credenziali (username + password)
+        st_cred, cred_res, _ = self._request(
+            "POST",
+            "/api/security/credentials",
+            {
+                "username": "fede_studio",
+                "display_name": "Federico Studio",
+                "current_password": "FisioFitness2026!",
+                "new_password": "NuovaPassword2026!",
+            },
+            token=mac_token,
+        )
+        self.assertEqual(st_cred, 200)
+        self.assertTrue(cred_res["updated"])
+        self.assertEqual(cred_res["username"], "fede_studio")
+
+        st_new_login, new_login_res, _ = self._request(
+            "POST",
+            "/api/auth/login",
+            {
+                "username": "fede_studio",
+                "password": "NuovaPassword2026!",
+                "totp_code": get_totp_code(sec_ov["totp_secret"]),
+            },
+        )
+        self.assertEqual(st_new_login, 200)
+        self.assertTrue(new_login_res["authenticated"])
+
 
 if __name__ == "__main__":
     unittest.main()
