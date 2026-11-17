@@ -162,7 +162,7 @@ async function apiFetch(path, options = {}) {
   }
 
   if (!resp.ok) {
-    if (method !== "GET") {
+    if (method !== "GET" && !options.silentStatus) {
       setSaveStatus("error", (data && data.error) || "Errore durante il salvataggio");
     }
     const err = new Error((data && data.error) || `Errore HTTP ${resp.status}`);
@@ -4462,6 +4462,7 @@ async function initApp() {
       document.getElementById("practitionerLabel").textContent = res.user?.display_name || "Professionista";
       document.getElementById("loginScreen").style.display = "none";
       document.getElementById("appShell").style.display = "flex";
+      setSaveStatus("saved", "Connesso");
       const cats = await apiFetch("/api/catalogs", { silentStatus: true });
       state.catalogs = cats;
       await refreshCurrentView();
@@ -4580,6 +4581,7 @@ async function initApp() {
       document.getElementById("practitionerLabel").textContent = status.user.display_name;
       document.getElementById("loginScreen").style.display = "none";
       document.getElementById("appShell").style.display = "flex";
+      setSaveStatus("saved", "Connesso");
       const cats = await apiFetch("/api/catalogs", { silentStatus: true });
       state.catalogs = cats;
       await refreshCurrentView();
