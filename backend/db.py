@@ -61,6 +61,15 @@ CREATE TABLE IF NOT EXISTS people (
     address TEXT,
     profession TEXT,
     sport_activity TEXT,
+    gender TEXT,
+    height_cm INTEGER,
+    weight_kg REAL,
+    weight_updated_at TEXT,
+    medical_history TEXT,
+    current_pain_notes TEXT,
+    goals TEXT,
+    training_frequency TEXT,
+    training_location TEXT,
     general_notes TEXT,
     physio_active INTEGER NOT NULL DEFAULT 0,
     fitness_active INTEGER NOT NULL DEFAULT 0,
@@ -563,6 +572,21 @@ def init_db(db_path: Optional[Path] = None) -> None:
     conn = get_connection(db_path)
     try:
         conn.executescript(SCHEMA_SQL)
+        # Migrazione incrementale colonne anagrafica/anamnesi per DB SQLite esistenti
+        existing_cols = {r["name"] for r in conn.execute("PRAGMA table_info(people)").fetchall()}
+        for col_name, col_type in [
+            ("gender", "TEXT"),
+            ("height_cm", "INTEGER"),
+            ("weight_kg", "REAL"),
+            ("weight_updated_at", "TEXT"),
+            ("medical_history", "TEXT"),
+            ("current_pain_notes", "TEXT"),
+            ("goals", "TEXT"),
+            ("training_frequency", "TEXT"),
+            ("training_location", "TEXT"),
+        ]:
+            if col_name not in existing_cols:
+                conn.execute(f"ALTER TABLE people ADD COLUMN {col_name} {col_type}")
         now = now_rome_iso()
         # Assicura l'esistenza dell'account personale (registrazione pubblica disabilitata)
         user_row = conn.execute("SELECT id FROM users LIMIT 1").fetchone()

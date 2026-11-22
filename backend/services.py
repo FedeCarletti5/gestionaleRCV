@@ -147,15 +147,33 @@ def create_person(conn: sqlite3.Connection, payload: Dict[str, Any], actor: str 
     if status not in ("attivo", "archiviato"):
         status = "attivo"
 
+    def _parse_int(val):
+        if val is None or str(val).strip() == "":
+            return None
+        try:
+            return int(float(str(val).replace(",", ".").strip()))
+        except ValueError:
+            return None
+
+    def _parse_float(val):
+        if val is None or str(val).strip() == "":
+            return None
+        try:
+            return round(float(str(val).replace(",", ".").strip()), 2)
+        except ValueError:
+            return None
+
     conn.execute("BEGIN IMMEDIATE")
     try:
         cur = conn.execute(
             """
             INSERT INTO people (
                 first_name, last_name, birth_date, tax_code, phone, email, address,
-                profession, sport_activity, general_notes, physio_active, fitness_active,
+                profession, sport_activity, gender, height_cm, weight_kg, weight_updated_at,
+                medical_history, current_pain_notes, goals, training_frequency, training_location,
+                general_notes, physio_active, fitness_active,
                 status, is_fictitious, version, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             """,
             (
                 first_name,
@@ -167,6 +185,15 @@ def create_person(conn: sqlite3.Connection, payload: Dict[str, Any], actor: str 
                 (payload.get("address") or "").strip() or None,
                 (payload.get("profession") or "").strip() or None,
                 (payload.get("sport_activity") or "").strip() or None,
+                (payload.get("gender") or "").strip() or None,
+                _parse_int(payload.get("height_cm")),
+                _parse_float(payload.get("weight_kg")),
+                (payload.get("weight_updated_at") or "").strip() or (now[:10] if _parse_float(payload.get("weight_kg")) is not None else None),
+                (payload.get("medical_history") or "").strip() or None,
+                (payload.get("current_pain_notes") or "").strip() or None,
+                (payload.get("goals") or "").strip() or None,
+                (payload.get("training_frequency") or "").strip() or None,
+                (payload.get("training_location") or "").strip() or None,
                 (payload.get("general_notes") or "").strip() or None,
                 physio_active,
                 fitness_active,
@@ -239,12 +266,44 @@ def update_person(
         now = now_rome_iso()
         new_version = int(current["version"]) + 1
 
+        def _parse_int_opt(val, fallback):
+            if val is None:
+                return fallback
+            if str(val).strip() == "":
+                return None
+            try:
+                return int(float(str(val).replace(",", ".").strip()))
+            except ValueError:
+                return fallback
+
+        def _parse_float_opt(val, fallback):
+            if val is None:
+                return fallback
+            if str(val).strip() == "":
+                return None
+            try:
+                return round(float(str(val).replace(",", ".").strip()), 2)
+            except ValueError:
+                return fallback
+
+        new_height = _parse_int_opt(payload.get("height_cm"), current.get("height_cm")) if "height_cm" in payload else current.get("height_cm")
+        new_weight = _parse_float_opt(payload.get("weight_kg"), current.get("weight_kg")) if "weight_kg" in payload else current.get("weight_kg")
+        if "weight_updated_at" in payload:
+            new_weight_updated = (payload.get("weight_updated_at") or "").strip() or None
+        elif "weight_kg" in payload and new_weight != current.get("weight_kg") and new_weight is not None:
+            new_weight_updated = now[:10]
+        else:
+            new_weight_updated = current.get("weight_updated_at")
+
         conn.execute(
             """
             UPDATE people SET
                 first_name = ?, last_name = ?, birth_date = ?, tax_code = ?,
                 phone = ?, email = ?, address = ?, profession = ?,
-                sport_activity = ?, general_notes = ?, physio_active = ?,
+                sport_activity = ?, gender = ?, height_cm = ?, weight_kg = ?,
+                weight_updated_at = ?, medical_history = ?, current_pain_notes = ?,
+                goals = ?, training_frequency = ?, training_location = ?,
+                general_notes = ?, physio_active = ?,
                 fitness_active = ?, status = ?, version = ?, updated_at = ?
             WHERE id = ?
             """,
@@ -258,6 +317,15 @@ def update_person(
                 payload.get("address", current["address"]),
                 payload.get("profession", current["profession"]),
                 payload.get("sport_activity", current["sport_activity"]),
+                payload.get("gender", current.get("gender")),
+                new_height,
+                new_weight,
+                new_weight_updated,
+                payload.get("medical_history", current.get("medical_history")),
+                payload.get("current_pain_notes", current.get("current_pain_notes")),
+                payload.get("goals", current.get("goals")),
+                payload.get("training_frequency", current.get("training_frequency")),
+                payload.get("training_location", current.get("training_location")),
                 payload.get("general_notes", current["general_notes"]),
                 physio_active,
                 fitness_active,

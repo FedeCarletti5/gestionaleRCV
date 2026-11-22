@@ -1244,11 +1244,26 @@ Deno.serve(async (req: Request) => {
       const physioActive = payload.physio_active ? 1 : 0;
       const fitnessActive = payload.fitness_active ? 1 : 0;
       const status = payload.status === "archiviato" ? "archiviato" : "attivo";
+      const parseIntOrNull = (v: unknown) => {
+        if (v === undefined || v === null || String(v).trim() === "") return null;
+        const n = Number(String(v).replace(",", ".").trim());
+        return Number.isFinite(n) ? Math.round(n) : null;
+      };
+      const parseFloatOrNull = (v: unknown) => {
+        if (v === undefined || v === null || String(v).trim() === "") return null;
+        const n = Number(String(v).replace(",", ".").trim());
+        return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+      };
+      const heightCm = parseIntOrNull(payload.height_cm);
+      const weightKg = parseFloatOrNull(payload.weight_kg);
+      const weightUpdatedAt = (payload.weight_updated_at || "").trim() || (weightKg !== null ? now.slice(0, 10) : null);
 
       const [person] = await sql`
         INSERT INTO public.people (
           first_name, last_name, birth_date, tax_code, phone, email, address,
-          profession, sport_activity, general_notes, physio_active, fitness_active,
+          profession, sport_activity, gender, height_cm, weight_kg, weight_updated_at,
+          medical_history, current_pain_notes, goals, training_frequency, training_location,
+          general_notes, physio_active, fitness_active,
           status, is_fictitious, version, created_at, updated_at
         ) VALUES (
           ${firstName}, ${lastName},
@@ -1259,6 +1274,15 @@ Deno.serve(async (req: Request) => {
           ${(payload.address || "").trim() || null},
           ${(payload.profession || "").trim() || null},
           ${(payload.sport_activity || "").trim() || null},
+          ${(payload.gender || "").trim() || null},
+          ${heightCm},
+          ${weightKg},
+          ${weightUpdatedAt},
+          ${(payload.medical_history || "").trim() || null},
+          ${(payload.current_pain_notes || "").trim() || null},
+          ${(payload.goals || "").trim() || null},
+          ${(payload.training_frequency || "").trim() || null},
+          ${(payload.training_location || "").trim() || null},
           ${(payload.general_notes || "").trim() || null},
           ${physioActive}, ${fitnessActive}, ${status}, 0, 1, ${now}, ${now}
         ) RETURNING *
@@ -1292,19 +1316,49 @@ Deno.serve(async (req: Request) => {
       const status = payload.status === "archiviato" || payload.status === "attivo" ? payload.status : current.status;
       const now = nowRomeIso();
       const newVersion = Number(current.version) + 1;
+      const parseIntOpt = (v: unknown, fb: number | null) => {
+        if (v === undefined) return fb;
+        if (v === null || String(v).trim() === "") return null;
+        const n = Number(String(v).replace(",", ".").trim());
+        return Number.isFinite(n) ? Math.round(n) : fb;
+      };
+      const parseFloatOpt = (v: unknown, fb: number | null) => {
+        if (v === undefined) return fb;
+        if (v === null || String(v).trim() === "") return null;
+        const n = Number(String(v).replace(",", ".").trim());
+        return Number.isFinite(n) ? Math.round(n * 100) / 100 : fb;
+      };
+      const nextHeight = parseIntOpt(payload.height_cm, current.height_cm ?? null);
+      const nextWeight = parseFloatOpt(payload.weight_kg, current.weight_kg !== null && current.weight_kg !== undefined ? Number(current.weight_kg) : null);
+      const currWeightNum = current.weight_kg !== null && current.weight_kg !== undefined ? Number(current.weight_kg) : null;
+      const nextWeightUpdatedAt =
+        payload.weight_updated_at !== undefined
+          ? (String(payload.weight_updated_at || "").trim() || null)
+          : payload.weight_kg !== undefined && nextWeight !== currWeightNum && nextWeight !== null
+          ? now.slice(0, 10)
+          : current.weight_updated_at ?? null;
 
       const [updated] = await sql`
         UPDATE public.people SET
           first_name = ${firstName},
           last_name = ${lastName},
-          birth_date = ${payload.birth_date !== undefined ? payload.birth_date : current.birth_date},
-          tax_code = ${payload.tax_code !== undefined ? payload.tax_code : current.tax_code},
-          phone = ${payload.phone !== undefined ? payload.phone : current.phone},
-          email = ${payload.email !== undefined ? payload.email : current.email},
-          address = ${payload.address !== undefined ? payload.address : current.address},
-          profession = ${payload.profession !== undefined ? payload.profession : current.profession},
-          sport_activity = ${payload.sport_activity !== undefined ? payload.sport_activity : current.sport_activity},
-          general_notes = ${payload.general_notes !== undefined ? payload.general_notes : current.general_notes},
+          birth_date = ${payload.birth_date !== undefined ? (payload.birth_date || null) : current.birth_date},
+          tax_code = ${payload.tax_code !== undefined ? (payload.tax_code || null) : current.tax_code},
+          phone = ${payload.phone !== undefined ? (payload.phone || null) : current.phone},
+          email = ${payload.email !== undefined ? (payload.email || null) : current.email},
+          address = ${payload.address !== undefined ? (payload.address || null) : current.address},
+          profession = ${payload.profession !== undefined ? (payload.profession || null) : current.profession},
+          sport_activity = ${payload.sport_activity !== undefined ? (payload.sport_activity || null) : current.sport_activity},
+          gender = ${payload.gender !== undefined ? (payload.gender || null) : (current.gender ?? null)},
+          height_cm = ${nextHeight},
+          weight_kg = ${nextWeight},
+          weight_updated_at = ${nextWeightUpdatedAt},
+          medical_history = ${payload.medical_history !== undefined ? (payload.medical_history || null) : (current.medical_history ?? null)},
+          current_pain_notes = ${payload.current_pain_notes !== undefined ? (payload.current_pain_notes || null) : (current.current_pain_notes ?? null)},
+          goals = ${payload.goals !== undefined ? (payload.goals || null) : (current.goals ?? null)},
+          training_frequency = ${payload.training_frequency !== undefined ? (payload.training_frequency || null) : (current.training_frequency ?? null)},
+          training_location = ${payload.training_location !== undefined ? (payload.training_location || null) : (current.training_location ?? null)},
+          general_notes = ${payload.general_notes !== undefined ? (payload.general_notes || null) : current.general_notes},
           physio_active = ${physioActive},
           fitness_active = ${fitnessActive},
           status = ${status},

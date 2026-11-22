@@ -19,7 +19,7 @@ const state = {
   currentNav: "dashboard",
   privacyMode: false,
   selectedPersonId: null,
-  selectedPersonTab: "riepilogo",
+  selectedPersonTab: "profilo",
   selectedEpisodeId: null,
   selectedEvalId: null,
   agendaViewMode: window.innerWidth < 768 ? "iphone_list" : "week",
@@ -623,15 +623,21 @@ async function renderPersonDossierView(container, personId) {
   const p = dossier.person;
   const sum = dossier.summary;
 
+  // Normalizza eventuali tab legacy
+  if (state.selectedPersonTab === "riepilogo" || state.selectedPersonTab === "anagrafica") {
+    state.selectedPersonTab = "profilo";
+  } else if (state.selectedPersonTab === "pacchetti") {
+    state.selectedPersonTab = "appuntamenti";
+  } else if (state.selectedPersonTab === "cronologia") {
+    state.selectedPersonTab = "documenti";
+  }
+
   const tabs = [
-    { id: "riepilogo", label: "📊 1. Riepilogo" },
-    { id: "anagrafica", label: "👤 2. Dati Anagrafici" },
-    { id: "fisio", label: `🩺 3. Area Fisio (${dossier.physio.episodes.length})` },
-    { id: "fitness", label: `🏋️ 4. Area Fitness (${dossier.fitness.programs.length})` },
-    { id: "appuntamenti", label: `📅 5. Appuntamenti (${dossier.appointments.length})` },
-    { id: "pacchetti", label: `🎟️ 6. Pacchetti & Pagamenti (${dossier.packages.length})` },
-    { id: "documenti", label: `📎 7. Documenti & Consensi (${dossier.attachments.length})` },
-    { id: "cronologia", label: `🕒 8. Cronologia (${dossier.audit_history.length})` }
+    { id: "profilo", label: "👤 1. Profilo & Anamnesi" },
+    { id: "fisio", label: `🩺 2. Fisio (${dossier.physio.episodes.length})` },
+    { id: "fitness", label: `🏋️ 3. PT & Fitness (${dossier.fitness.programs.length})` },
+    { id: "appuntamenti", label: `📅 4. Appuntamenti & Pacchetti (${dossier.appointments.length} · ${dossier.packages.length})` },
+    { id: "documenti", label: `📎 5. Documenti & Cronologia (${dossier.attachments.length})` }
   ];
 
   const tabsHtml = tabs
@@ -640,6 +646,11 @@ async function renderPersonDossierView(container, personId) {
         `<button class="tab-btn ${state.selectedPersonTab === t.id ? "active" : ""}" data-person-subtab="${t.id}">${t.label}</button>`
     )
     .join("");
+
+  const heightStr = p.height_cm ? `${p.height_cm} cm` : "-";
+  const weightStr = p.weight_kg !== null && p.weight_kg !== undefined && p.weight_kg !== ""
+    ? `${p.weight_kg} kg${p.weight_updated_at ? ` (${p.weight_updated_at})` : ""}`
+    : "-";
 
   container.innerHTML = `
     <div style="margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
@@ -656,28 +667,28 @@ async function renderPersonDossierView(container, personId) {
         <div>
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
             <h1 style="margin:0; font-size:23px; color:#fff;" class="sensitive-data">${esc(p.first_name)} ${esc(p.last_name)}</h1>
-            ${p.physio_active ? `<span class="badge badge-physio">🩺 Percorso Fisio Attivo</span>` : ""}
-            ${p.fitness_active ? `<span class="badge badge-fitness">🏋️ Percorso Fitness Attivo</span>` : ""}
+            ${p.physio_active ? `<span class="badge badge-physio">🩺 Fisio</span>` : ""}
+            ${p.fitness_active ? `<span class="badge badge-fitness">🏋️ PT / Fitness</span>` : ""}
             <span class="badge ${p.status === "attivo" ? "badge-success" : "badge-neutral"}">${esc(p.status.toUpperCase())}</span>
           </div>
           <div style="font-size:13.5px; color:#cbd5e1; margin-top:6px;" class="sensitive-data">
             🎂 Nascita: <strong>${esc(p.birth_date || "-")}</strong>
+            ${p.gender ? ` · ${esc(p.gender)}` : ""}
+            · 📏 Altezza: <strong>${esc(heightStr)}</strong>
+            · ⚖️ Peso: <strong>${esc(weightStr)}</strong>
             · 📞 Tel: <strong>${esc(p.phone || "-")}</strong>
-            · ✉️ Email: <strong>${esc(p.email || "-")}</strong>
-            · 🏃 Sport: <strong>${esc(p.sport_activity || "-")}</strong>
           </div>
+          ${
+            p.sport_activity || p.goals
+              ? `<div style="font-size:12.5px; color:#94a3b8; margin-top:4px;" class="sensitive-data">
+                  ${p.sport_activity ? `🏃 Sport: <strong style="color:#e2e8f0;">${esc(p.sport_activity)}</strong>` : ""}
+                  ${p.sport_activity && p.goals ? " · " : ""}
+                  ${p.goals ? `🎯 Obiettivo: <strong style="color:#e2e8f0;">${esc(p.goals)}</strong>` : ""}
+                </div>`
+              : ""
+          }
         </div>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          ${
-            !p.physio_active
-              ? `<button class="btn btn-sm btn-physio" id="quickActivatePhysioBtn">➕ Attiva Area Fisio</button>`
-              : ""
-          }
-          ${
-            !p.fitness_active
-              ? `<button class="btn btn-sm btn-fitness" id="quickActivateFitnessBtn">➕ Attiva Area Fitness</button>`
-              : ""
-          }
           <button class="btn btn-sm btn-primary" id="dossierNewApptBtn">📅 Prenota Seduta</button>
         </div>
       </div>
@@ -708,22 +719,6 @@ async function renderPersonDossierView(container, personId) {
     await renderPeopleListView(container);
   });
   document.getElementById("dossierNewApptBtn")?.addEventListener("click", () => showNewAppointmentModal(p.id));
-  document.getElementById("quickActivatePhysioBtn")?.addEventListener("click", async () => {
-    await apiFetch(`/api/people/${p.id}`, {
-      method: "PUT",
-      body: { physio_active: true, expected_version: p.version }
-    });
-    state.selectedPersonTab = "fisio";
-    await renderPersonDossierView(container, p.id);
-  });
-  document.getElementById("quickActivateFitnessBtn")?.addEventListener("click", async () => {
-    await apiFetch(`/api/people/${p.id}`, {
-      method: "PUT",
-      body: { fitness_active: true, expected_version: p.version }
-    });
-    state.selectedPersonTab = "fitness";
-    await renderPersonDossierView(container, p.id);
-  });
 
   container.querySelectorAll("[data-person-subtab]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -733,22 +728,20 @@ async function renderPersonDossierView(container, personId) {
   });
 
   const subViewport = document.getElementById("personSubtabViewport");
-  if (state.selectedPersonTab === "riepilogo") {
-    renderPersonTabRiepilogo(subViewport, dossier);
-  } else if (state.selectedPersonTab === "anagrafica") {
-    renderPersonTabAnagrafica(subViewport, dossier);
+  if (state.selectedPersonTab === "profilo") {
+    renderPersonTabProfilo(subViewport, dossier);
   } else if (state.selectedPersonTab === "fisio") {
     renderPersonTabFisio(subViewport, dossier);
   } else if (state.selectedPersonTab === "fitness") {
     renderPersonTabFitness(subViewport, dossier);
   } else if (state.selectedPersonTab === "appuntamenti") {
-    renderPersonTabAppuntamenti(subViewport, dossier);
-  } else if (state.selectedPersonTab === "pacchetti") {
-    renderPersonTabPacchetti(subViewport, dossier);
+    subViewport.innerHTML = `<div id="subApptsWrap"></div><div id="subPacksWrap" style="margin-top:16px;"></div>`;
+    renderPersonTabAppuntamenti(document.getElementById("subApptsWrap"), dossier);
+    renderPersonTabPacchetti(document.getElementById("subPacksWrap"), dossier);
   } else if (state.selectedPersonTab === "documenti") {
-    renderPersonTabDocumenti(subViewport, dossier);
-  } else if (state.selectedPersonTab === "cronologia") {
-    renderPersonTabCronologia(subViewport, dossier);
+    subViewport.innerHTML = `<div id="subDocsWrap"></div><div id="subHistWrap" style="margin-top:16px;"></div>`;
+    renderPersonTabDocumenti(document.getElementById("subDocsWrap"), dossier);
+    renderPersonTabCronologia(document.getElementById("subHistWrap"), dossier);
   }
 }
 
@@ -863,16 +856,65 @@ function renderPersonTabRiepilogo(viewport, dossier) {
   });
 }
 
-// --- TAB 2: DATI ANAGRAFICI ---
-function renderPersonTabAnagrafica(viewport, dossier) {
+// --- TAB 1: PROFILO UNICO (ANAGRAFICA, MISURE, ANAMNESI E OBIETTIVI) ---
+function renderPersonTabProfilo(viewport, dossier) {
   const p = dossier.person;
+  const sum = dossier.summary || {};
+  const lims = (dossier.shared_limitations || []).filter((l) => l.is_active);
+
+  const nextApptText = sum.next_appointment
+    ? `${formatRomeDateTime(sum.next_appointment.start_at)} (${sum.next_appointment.session_type})`
+    : "Nessuna prenotata";
+
+  const activeLimsHtml = lims.length
+    ? `
+      <div class="card" style="border-left:4px solid #d97706; margin-bottom:14px;">
+        <div class="card-header" style="margin-bottom:8px;">
+          <h3 class="card-title" style="color:#b45309;">⚠️ Limitazioni / Attenzioni Cliniche Condivise (${lims.length})</h3>
+          <button class="btn btn-sm btn-secondary" id="addSharedLimFromProfileBtn">➕ Aggiungi Limitazione</button>
+        </div>
+        ${lims
+          .map(
+            (l) => `
+          <div style="padding:8px 10px; background:var(--bg-subtle); border-radius:6px; margin-bottom:6px; font-size:13px;">
+            <strong>${esc(l.title)}</strong> (${esc(l.body_region || "Generale")} · Lato: ${esc(l.laterality || "N/A")}) —
+            <span class="sensitive-data">${esc(l.description)}</span>
+          </div>`
+          )
+          .join("")}
+      </div>
+    `
+    : "";
+
   viewport.innerHTML = `
+    <div class="grid-3" style="margin-bottom:14px;">
+      <div class="kpi-card">
+        <div class="kpi-label">📅 Prossima Seduta</div>
+        <div style="font-size:14px; font-weight:700; margin-top:4px;">${esc(nextApptText)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">🎟️ Sedute Residue</div>
+        <div class="kpi-value" style="font-size:22px;">${sum.total_remaining_sessions ?? 0}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">🩺 Episodi Fisio / 🏋️ Schede PT</div>
+        <div class="kpi-value" style="font-size:22px;">${dossier.physio.episodes.length} / ${dossier.fitness.programs.length}</div>
+      </div>
+    </div>
+
+    ${activeLimsHtml}
+
     <div class="card">
       <div class="card-header">
-        <h3 class="card-title">👤 Dati Anagrafici e Attivazione Percorsi (Versione record: v${p.version})</h3>
+        <h3 class="card-title">👤 Profilo, Misure e Anamnesi (v${p.version})</h3>
+        ${!lims.length ? `<button class="btn btn-sm btn-secondary" id="addSharedLimFromProfileBtn">⚠️ + Limitazione Rapida</button>` : ""}
       </div>
       <form id="editPersonForm">
         <input type="hidden" name="expected_version" value="${p.version}" />
+
+        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:#64748b; margin:4px 0 10px;">
+          1. Anagrafica, Misure e Percorsi
+        </div>
         <div class="grid-3">
           <div class="form-group">
             <label class="form-label">Nome *</label>
@@ -887,6 +929,29 @@ function renderPersonTabAnagrafica(viewport, dossier) {
             <input class="form-control" type="date" name="birth_date" value="${esc(p.birth_date || "")}" />
           </div>
         </div>
+        <div class="grid-4">
+          <div class="form-group">
+            <label class="form-label">Sesso</label>
+            <select class="form-control" name="gender">
+              <option value="" ${!p.gender ? "selected" : ""}>—</option>
+              <option value="Uomo" ${p.gender === "Uomo" ? "selected" : ""}>Uomo</option>
+              <option value="Donna" ${p.gender === "Donna" ? "selected" : ""}>Donna</option>
+              <option value="Altro" ${p.gender === "Altro" ? "selected" : ""}>Altro</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Altezza (cm)</label>
+            <input class="form-control" type="number" min="80" max="240" step="1" name="height_cm" value="${p.height_cm ?? ""}" placeholder="es. 175" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Peso attuale (kg)</label>
+            <input class="form-control" type="number" min="20" max="250" step="0.1" name="weight_kg" value="${p.weight_kg ?? ""}" placeholder="es. 72.5" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Data misurazione peso</label>
+            <input class="form-control" type="date" name="weight_updated_at" value="${esc(p.weight_updated_at || "")}" />
+          </div>
+        </div>
         <div class="grid-3">
           <div class="form-group">
             <label class="form-label">Telefono</label>
@@ -897,33 +962,19 @@ function renderPersonTabAnagrafica(viewport, dossier) {
             <input class="form-control" type="email" name="email" value="${esc(p.email || "")}" />
           </div>
           <div class="form-group">
-            <label class="form-label">Codice Fiscale / Dati Amm. (Facoltativo)</label>
-            <input class="form-control" name="tax_code" value="${esc(p.tax_code || "")}" />
-          </div>
-        </div>
-        <div class="grid-3">
-          <div class="form-group">
-            <label class="form-label">Indirizzo (Facoltativo)</label>
-            <input class="form-control" name="address" value="${esc(p.address || "")}" />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Professione</label>
+            <label class="form-label">Professione / Giornata tipo</label>
             <input class="form-control" name="profession" value="${esc(p.profession || "")}" />
           </div>
-          <div class="form-group">
-            <label class="form-label">Attività Sportiva Praticata</label>
-            <input class="form-control" name="sport_activity" value="${esc(p.sport_activity || "")}" />
-          </div>
         </div>
         <div class="grid-3">
           <div class="form-group">
-            <label class="form-label">Percorsi Abilitati sull'Anagrafica Unica</label>
+            <label class="form-label">Percorsi Attivi (solo etichetta/filtro)</label>
             <div style="display:flex; gap:16px; padding-top:8px;">
-              <label style="display:flex; align-items:center; gap:6px; font-weight:600;">
-                <input type="checkbox" name="physio_active" ${p.physio_active ? "checked" : ""} /> 🩺 Paziente Fisio
+              <label style="display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer;">
+                <input type="checkbox" name="physio_active" ${p.physio_active ? "checked" : ""} /> 🩺 Fisio
               </label>
-              <label style="display:flex; align-items:center; gap:6px; font-weight:600;">
-                <input type="checkbox" name="fitness_active" ${p.fitness_active ? "checked" : ""} /> 🏋️ Cliente Fitness
+              <label style="display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer;">
+                <input type="checkbox" name="fitness_active" ${p.fitness_active ? "checked" : ""} /> 🏋️ PT / Fitness
               </label>
             </div>
           </div>
@@ -934,18 +985,72 @@ function renderPersonTabAnagrafica(viewport, dossier) {
               <option value="archiviato" ${p.status === "archiviato" ? "selected" : ""}>Archiviato</option>
             </select>
           </div>
+          <div class="form-group">
+            <label class="form-label">Codice Fiscale / Indirizzo (Facoltativo)</label>
+            <div style="display:flex; gap:6px;">
+              <input class="form-control" name="tax_code" value="${esc(p.tax_code || "")}" placeholder="CF" />
+              <input class="form-control" name="address" value="${esc(p.address || "")}" placeholder="Indirizzo" />
+            </div>
+          </div>
+        </div>
+
+        <hr style="border:none; border-top:1px solid var(--border-color); margin:16px 0;" />
+
+        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:#64748b; margin-bottom:10px;">
+          2. Anamnesi &amp; Storia Clinica (sempre disponibile, anche per soli PT)
+        </div>
+        <div class="grid-2">
+          <div class="form-group">
+            <label class="form-label">Storia Clinica, Infortuni, Interventi e Farmaci</label>
+            <textarea class="form-control" rows="3" name="medical_history" placeholder="Es. Intervento tunnel carpale 2025, ricostruzione LCA, ernie, farmaci...">${esc(p.medical_history || "")}</textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Dolori, Fastidi Articolari o Limitazioni Attuali</label>
+            <textarea class="form-control" rows="3" name="current_pain_notes" placeholder="Es. Dolore spalla dx da 4 mesi (VAS 5/10), fastidio lombare saltuario...">${esc(p.current_pain_notes || "")}</textarea>
+          </div>
+        </div>
+
+        <hr style="border:none; border-top:1px solid var(--border-color); margin:16px 0;" />
+
+        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:#64748b; margin-bottom:10px;">
+          3. Sport, Obiettivi &amp; Organizzazione
+        </div>
+        <div class="grid-2">
+          <div class="form-group">
+            <label class="form-label">Obiettivi (3–6 mesi)</label>
+            <textarea class="form-control" rows="2" name="goals" placeholder="Es. Aumentare forza, riprendere a correre, preparare gara...">${esc(p.goals || "")}</textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Sport / Allenamento Attuale</label>
+            <textarea class="form-control" rows="2" name="sport_activity" placeholder="Es. Palestra 2x, calcio 3x, pilates 1x...">${esc(p.sport_activity || "")}</textarea>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="form-group">
+            <label class="form-label">Frequenza Settimanale Disponibile</label>
+            <input class="form-control" name="training_frequency" value="${esc(p.training_frequency || "")}" placeholder="Es. 2 volte a settimana" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Dove si Allena</label>
+            <input class="form-control" name="training_location" value="${esc(p.training_location || "")}" placeholder="Es. Solo in studio, palestra esterna, casa..." />
+          </div>
         </div>
         <div class="form-group">
-          <label class="form-label">Note Generali Condivise (non cliniche)</label>
-          <textarea class="form-control" name="general_notes">${esc(p.general_notes || "")}</textarea>
+          <label class="form-label">Note Generali, Attrezzatura a Casa e Orari Preferiti</label>
+          <textarea class="form-control" rows="2" name="general_notes">${esc(p.general_notes || "")}</textarea>
         </div>
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">
-          <span style="font-size:12px; color:#64748b;">Controllo concorrenza attivo: se un altro dispositivo modifica questa scheda, riceverai un avviso 409 senza perdere dati.</span>
-          <button type="submit" class="btn btn-primary">💾 Salva Dati Anagrafici</button>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; flex-wrap:wrap; gap:10px;">
+          <span style="font-size:12px; color:#64748b;">Le spunte Fisio/PT servono solo per etichettare e filtrare i percorsi: tutte le tab restano sempre accessibili.</span>
+          <button type="submit" class="btn btn-primary">💾 Salva Profilo &amp; Anamnesi</button>
         </div>
       </form>
     </div>
   `;
+
+  document.getElementById("addSharedLimFromProfileBtn")?.addEventListener("click", () => {
+    showAddSharedLimitationModal(p.id, dossier.physio.episodes || [], null);
+  });
 
   document.getElementById("editPersonForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -957,12 +1062,21 @@ function renderPersonTabAnagrafica(viewport, dossier) {
         first_name: fd.get("first_name"),
         last_name: fd.get("last_name"),
         birth_date: fd.get("birth_date"),
+        gender: fd.get("gender"),
+        height_cm: fd.get("height_cm"),
+        weight_kg: fd.get("weight_kg"),
+        weight_updated_at: fd.get("weight_updated_at"),
         phone: fd.get("phone"),
         email: fd.get("email"),
         tax_code: fd.get("tax_code"),
         address: fd.get("address"),
         profession: fd.get("profession"),
         sport_activity: fd.get("sport_activity"),
+        medical_history: fd.get("medical_history"),
+        current_pain_notes: fd.get("current_pain_notes"),
+        goals: fd.get("goals"),
+        training_frequency: fd.get("training_frequency"),
+        training_location: fd.get("training_location"),
         physio_active: fd.get("physio_active") === "on",
         fitness_active: fd.get("fitness_active") === "on",
         status: fd.get("status"),
@@ -972,6 +1086,7 @@ function renderPersonTabAnagrafica(viewport, dossier) {
     await refreshCurrentView();
   });
 }
+const renderPersonTabAnagrafica = renderPersonTabProfilo;
 
 // ============================================================================
 // TAB 3: AREA FISIOTERAPIA (EPISODI, VALUTAZIONI, BODY MAP 2D, FLAGS, SCALE, SOAP)
