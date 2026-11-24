@@ -1107,45 +1107,25 @@ textarea.form-control {
   border-top: 1px solid var(--border);
 }
 
-/* Agenda Grid */
-.agenda-week-grid {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 8px;
+/* Barra Progresso Sedute Pacchetto */
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-subtle);
+  border-radius: 999px;
+  overflow: hidden;
 }
-.agenda-day-col {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 10px;
-  min-height: 200px;
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.2s ease;
 }
-.agenda-day-header {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  padding-bottom: 6px;
-  margin-bottom: 8px;
-  border-bottom: 1px solid var(--border);
-  text-transform: capitalize;
+.progress-fill.low {
+  background: #d97706;
 }
-.agenda-day-header.is-today {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-.agenda-item {
-  padding: 8px;
-  margin-bottom: 6px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  background: var(--bg-hover);
-  cursor: pointer;
-  transition: border-color 0.12s;
-}
-.agenda-item:hover {
-  border-color: var(--accent-border);
-  background: var(--accent-soft);
+.progress-fill.empty {
+  background: #9ca3af;
 }
 
 /* Empty State */

@@ -975,7 +975,25 @@ Deno.serve(async (req: Request) => {
         const statusFilter = url.searchParams.get("status") || "attivo";
 
         const allRows = await sql`SELECT * FROM public.people ORDER BY last_name ASC, first_name ASC`;
-        let people = Array.from(allRows);
+        const pkgBalances = await sql`
+          SELECT pkg.person_id,
+                 SUM(GREATEST(0, pkg.total_sessions - COALESCE(m.consumed, 0)))::int AS remaining_sessions
+          FROM public.packages pkg
+          LEFT JOIN (
+            SELECT package_id, COALESCE(SUM(delta_sessions), 0)::int AS consumed
+            FROM public.package_movements
+            GROUP BY package_id
+          ) m ON m.package_id = pkg.id
+          WHERE pkg.status = 'attivo'
+          GROUP BY pkg.person_id
+        `;
+        const remMap: Record<number, number> = {};
+        for (const b of pkgBalances) remMap[Number(b.person_id)] = Number(b.remaining_sessions || 0);
+
+        let people = Array.from(allRows).map((p) => ({
+          ...p,
+          remaining_sessions: remMap[Number(p.id)] || 0,
+        }));
         if (statusFilter === "attivo" || statusFilter === "archiviato") {
           people = people.filter((p) => p.status === statusFilter);
         }
@@ -2188,6 +2206,67 @@ Deno.serve(async (req: Request) => {
         `;
       }
       return jsonResponse(201, await computePackageSummary(pkg));
+    }
+
+    const mPkgMov = path.match(/^\/api\/packages\/(\d+)\/movements$/);
+    if (mPkgMov && method === "POST") {
+      const pkgId = Number(mPkgMov[1]);
+      const [currPkg] = await sql`SELECT * FROM public.packages WHERE id = ${pkgId}`;
+      if (!currPkg) throw new NotFoundError("Pacchetto non trovato.");
+      const summary = await computePackageSummary(currPkg);
+      const action = String(payload.action || "consume").toLowerCase();
+      const now = nowRomeIso();
+      const sessionDate = (payload.session_date || "").trim();
+      const movTimestamp = sessionDate && /^\d{4}-\d{2}-\d{2}$/.test(sessionDate) ? `${sessionDate}T${now.slice(11)}` : now;
+      const idemKey = `manual_${pkgId}_${Date.now()}_${randomHex(4)}`;
+
+      if (action === "consume") {
+        if (summary.remaining_sessions <= 0) {
+          throw new ValidationError("Nessuna seduta rimanente su questo pacchetto.");
+        }
+        const reason = (payload.reason || "Seduta svolta").trim();
+        await sql`
+          INSERT INTO public.package_movements (
+            package_id, person_id, appointment_id, movement_type, delta_sessions,
+            reason, idempotency_key, reversed_movement_id, created_at, created_by
+          ) VALUES (
+            ${pkgId}, ${currPkg.person_id}, NULL, 'CONSUME', 1,
+            ${reason}, ${idemKey}, NULL, ${movTimestamp}, ${actor}
+          )
+        `;
+        await logAudit("CONSUME_PACKAGE_SESSION", "packages", pkgId, currPkg.person_id, `Scalata 1 seduta da '${currPkg.name}' (${reason})`, actor);
+      } else if (action === "undo" || action === "reversal") {
+        if (summary.consumed_sessions <= 0) {
+          throw new ValidationError("Nessuna seduta svolta da ripristinare su questo pacchetto.");
+        }
+        const reason = (payload.reason || "Ripristino seduta").trim();
+        await sql`
+          INSERT INTO public.package_movements (
+            package_id, person_id, appointment_id, movement_type, delta_sessions,
+            reason, idempotency_key, reversed_movement_id, created_at, created_by
+          ) VALUES (
+            ${pkgId}, ${currPkg.person_id}, NULL, 'REVERSAL', -1,
+            ${reason}, ${idemKey}, NULL, ${movTimestamp}, ${actor}
+          )
+        `;
+        await logAudit("UNDO_PACKAGE_SESSION", "packages", pkgId, currPkg.person_id, `Ripristinata 1 seduta su '${currPkg.name}' (${reason})`, actor);
+      } else {
+        throw new ValidationError("Azione movimento non valida.");
+      }
+
+      await syncPackageStatus(pkgId);
+      const [freshPkg] = await sql`SELECT * FROM public.packages WHERE id = ${pkgId}`;
+      return jsonResponse(200, await computePackageSummary(freshPkg));
+    }
+
+    const mPkgDel = path.match(/^\/api\/packages\/(\d+)$/);
+    if (mPkgDel && method === "DELETE") {
+      const pkgId = Number(mPkgDel[1]);
+      const [currPkg] = await sql`SELECT * FROM public.packages WHERE id = ${pkgId}`;
+      if (!currPkg) throw new NotFoundError("Pacchetto non trovato.");
+      await sql`DELETE FROM public.packages WHERE id = ${pkgId}`;
+      await logAudit("DELETE_PACKAGE", "packages", pkgId, currPkg.person_id, `Eliminato pacchetto '${currPkg.name}'`, actor);
+      return jsonResponse(200, { deleted: true, id: pkgId });
     }
 
     const mPkgSusp = path.match(/^\/api\/packages\/(\d+)\/status$/);

@@ -44,6 +44,7 @@ from backend.services import (
     create_physio_episode,
     create_shared_limitation,
     delete_outcome_measure,
+    delete_package,
     export_calendar_ics,
     find_potential_duplicates,
     get_dashboard_overview,
@@ -52,6 +53,7 @@ from backend.services import (
     get_person_full_dossier,
     get_physio_episode_detail,
     record_fitness_metric,
+    record_manual_package_movement,
     record_outcome_measure,
     record_payment,
     record_workout_log,
@@ -309,6 +311,23 @@ class GestionaleHTTPHandler(BaseHTTPRequestHandler):
 
             sql += " ORDER BY last_name ASC, first_name ASC"
             people = rows_to_list(conn.execute(sql, params).fetchall())
+            bal_rows = conn.execute(
+                """
+                SELECT pkg.person_id,
+                       SUM(MAX(0, pkg.total_sessions - COALESCE(m.consumed, 0))) AS remaining_sessions
+                FROM packages pkg
+                LEFT JOIN (
+                    SELECT package_id, COALESCE(SUM(delta_sessions), 0) AS consumed
+                    FROM package_movements
+                    GROUP BY package_id
+                ) m ON m.package_id = pkg.id
+                WHERE pkg.status = 'attivo'
+                GROUP BY pkg.person_id
+                """
+            ).fetchall()
+            rem_map = {int(r["person_id"]): int(r["remaining_sessions"] or 0) for r in bal_rows}
+            for p in people:
+                p["remaining_sessions"] = rem_map.get(int(p["id"]), 0)
             if q:
                 people = [
                     p
@@ -816,6 +835,18 @@ class GestionaleHTTPHandler(BaseHTTPRequestHandler):
             if path == "/api/packages" and method == "POST":
                 pkg = create_package(conn, payload, actor=actor)
                 self._send_json(201, pkg)
+                return
+
+            m_pkg_mov = re.match(r"^/api/packages/(\d+)/movements$", path)
+            if m_pkg_mov and method == "POST":
+                pkg = record_manual_package_movement(conn, int(m_pkg_mov.group(1)), payload, actor=actor)
+                self._send_json(200, pkg)
+                return
+
+            m_pkg_del = re.match(r"^/api/packages/(\d+)$", path)
+            if m_pkg_del and method == "DELETE":
+                res = delete_package(conn, int(m_pkg_del.group(1)), actor=actor)
+                self._send_json(200, res)
                 return
 
             m_pkg_susp = re.match(r"^/api/packages/(\d+)/status$", path)

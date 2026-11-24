@@ -3,14 +3,14 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js?v=8";
+} from "./body_map.js?v=9";
 import {
   PCS_ITEMS,
   TSK13_ITEMS,
   computeScaleBreakdown,
   buildClinicalNoteFromBreakdown,
   parseTallyScalesCsv
-} from "./scales.js?v=8";
+} from "./scales.js?v=9";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
@@ -30,9 +30,6 @@ const state = {
   profileEditMode: false,
   selectedEpisodeId: null,
   selectedEvalId: null,
-  agendaViewMode: window.innerWidth < 768 ? "iphone_list" : "week",
-  agendaDate: new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" }),
-  agendaAreaFilter: "tutti",
   peopleAreaFilter: "tutti",
   peopleStatusFilter: "attivo",
   peopleLocalQuery: "",
@@ -50,11 +47,12 @@ const state = {
 };
 
 // ============================================================================
-// ICONE SVG MONOCROMATICHE (ZERO EMOJI)
+// ICONE SVG MONOCROMATICHE
 // ============================================================================
 
 const ICONS = {
   plus: `<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>`,
+  minus: `<line x1="5" y1="12" x2="19" y2="12"/>`,
   back: `<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>`,
   edit: `<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>`,
   trash: `<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>`,
@@ -63,13 +61,8 @@ const ICONS = {
   printer: `<polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>`,
   chevronRight: `<polyline points="9 18 15 12 9 6"/>`,
   chevronDown: `<polyline points="6 9 12 15 18 9"/>`,
-  search: `<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>`,
-  check: `<polyline points="20 6 9 17 4 12"/>`,
   x: `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`,
-  calendar: `<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>`,
-  file: `<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>`,
-  eye: `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>`,
-  eyeOff: `<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/>`
+  rotateCcw: `<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>`
 };
 
 function ico(name, sizeClass = "ico-sm") {
@@ -88,11 +81,6 @@ function esc(val) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-function formatEur(cents) {
-  const num = Number(cents || 0) / 100;
-  return `€ ${num.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function formatDateIt(isoDate) {
@@ -130,11 +118,6 @@ function formatRomeDateTime(isoStr) {
   }
 }
 
-function formatRomeTime(isoStr) {
-  if (!isoStr) return "";
-  return String(isoStr).slice(11, 16);
-}
-
 function todayRomeStr() {
   return new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
 }
@@ -145,17 +128,13 @@ function setSaveStatus(mode, text) {
   el.className = `save-status ${mode}`;
   const label = el.querySelector(".status-text");
   if (!label) return;
-  if (mode === "saving") {
-    label.textContent = text || "Salvataggio...";
-  } else if (mode === "saved") {
-    label.textContent = text || "Salvato";
-  } else if (mode === "error") {
-    label.textContent = text || "Errore";
-  }
+  if (mode === "saving") label.textContent = text || "Salvataggio...";
+  else if (mode === "saved") label.textContent = text || "Salvato";
+  else if (mode === "error") label.textContent = text || "Errore";
 }
 
 // ============================================================================
-// CLIENT API CON PROTEZIONE CSRF E GESTIONE CONFLITTI (409)
+// CLIENT API
 // ============================================================================
 
 function buildAuthUrl(path) {
@@ -241,7 +220,7 @@ function showConflictResolutionModal(message, serverRecord) {
     <h2 class="modal-title">Modifica da un altro dispositivo</h2>
     <p style="color:var(--text-secondary); margin-top:0;">${esc(message)}</p>
     <p style="font-size:13px; color:var(--text-muted);">
-      Versione attuale sul server: <strong>v${esc(serverRecord?.version)}</strong> (${esc(formatRomeDateTime(serverRecord?.updated_at))}).
+      Versione sul server: <strong>v${esc(serverRecord?.version)}</strong> (${esc(formatRomeDateTime(serverRecord?.updated_at))}).
     </p>
     <div class="modal-footer">
       <button class="btn btn-primary" id="conflictReloadBtn">Ricarica dati aggiornati</button>
@@ -295,8 +274,15 @@ function showLoginScreen(errMsg = "") {
   }
 }
 
+function normalizePersonTab(tab) {
+  if (tab === "riepilogo" || tab === "anagrafica" || tab === "fitness") return "profilo";
+  if (tab === "appuntamenti") return "pacchetti";
+  if (tab === "cronologia") return "documenti";
+  return tab || "profilo";
+}
+
 async function navigateTo(navKey, options = {}) {
-  state.currentNav = navKey === "dashboard" ? "people" : navKey;
+  state.currentNav = ["people", "packages", "security"].includes(navKey) ? navKey : "people";
   if (options.personId !== undefined) {
     if (options.personId !== state.selectedPersonId) {
       state.profileEditMode = false;
@@ -315,13 +301,6 @@ async function navigateTo(navKey, options = {}) {
   await refreshCurrentView();
 }
 
-function normalizePersonTab(tab) {
-  if (tab === "riepilogo" || tab === "anagrafica") return "profilo";
-  if (tab === "appuntamenti") return "pacchetti";
-  if (tab === "cronologia") return "documenti";
-  return tab || "profilo";
-}
-
 async function refreshCurrentView() {
   const container = document.getElementById("mainViewContainer");
   if (!container) return;
@@ -333,15 +312,13 @@ async function refreshCurrentView() {
     }
   } else if (state.currentNav === "packages") {
     await renderPackagesView(container);
-  } else if (state.currentNav === "agenda") {
-    await renderAgendaView(container);
   } else if (state.currentNav === "security") {
     await renderSecurityView(container);
   }
 }
 
 // ============================================================================
-// 1. LISTA PERSONE (HOME PRINCIPALE)
+// 1. LISTA PERSONE
 // ============================================================================
 
 async function renderPeopleListView(container) {
@@ -381,9 +358,9 @@ async function renderPeopleListView(container) {
             type="search"
             id="peopleInlineFilter"
             class="form-control form-control-sm"
-            placeholder="Filtra per nome, sport, obiettivo..."
+            placeholder="Filtra per nome, problematica, sport..."
             value="${esc(state.peopleLocalQuery)}"
-            style="max-width:260px;"
+            style="max-width:280px;"
           />
         </div>
         <select class="form-control form-control-sm" id="peopleStatusSelect" style="width:auto;">
@@ -399,8 +376,8 @@ async function renderPeopleListView(container) {
             <tr>
               <th>Nome</th>
               <th>Percorso</th>
-              <th>Obiettivo / Attività</th>
-              <th>Contatti</th>
+              <th>Problematiche / Obiettivo</th>
+              <th style="width:110px;">Sedute rim.</th>
               <th style="width:36px;"></th>
             </tr>
           </thead>
@@ -414,7 +391,7 @@ async function renderPeopleListView(container) {
     const q = (state.peopleLocalQuery || "").trim().toLowerCase();
     const list = q
       ? state.peopleCache.filter((p) => {
-          const hay = `${p.first_name} ${p.last_name} ${p.sport_activity || ""} ${p.goals || ""} ${p.phone || ""} ${p.email || ""}`.toLowerCase();
+          const hay = `${p.first_name} ${p.last_name} ${p.current_pain_notes || ""} ${p.medical_history || ""} ${p.sport_activity || ""} ${p.goals || ""} ${p.phone || ""}`.toLowerCase();
           return hay.includes(q);
         })
       : state.peopleCache;
@@ -438,8 +415,12 @@ async function renderPeopleListView(container) {
         if (!tags.length) tags.push(`<span class="tag">—</span>`);
         if (p.status === "archiviato") tags.push(`<span class="tag tag-warning">Archiviato</span>`);
 
-        const summaryText = p.goals || p.sport_activity || "—";
-        const contactLine = p.phone || p.email || "—";
+        const summaryText = p.current_pain_notes || p.goals || p.sport_activity || "—";
+        const rem = Number(p.remaining_sessions || 0);
+        const remBadge =
+          rem > 0
+            ? `<span class="tag ${rem <= 2 ? "tag-warning" : "tag-accent"} num"><strong>${rem}</strong> rim.</span>`
+            : `<span style="color:var(--text-muted);">—</span>`;
 
         return `
           <tr class="clickable-row" data-open-person="${p.id}">
@@ -448,12 +429,12 @@ async function renderPeopleListView(container) {
               ${age ? `<div style="font-size:12px; color:var(--text-muted);" class="sensitive-data">${esc(age)}</div>` : ""}
             </td>
             <td><div style="display:flex; gap:4px; flex-wrap:wrap;">${tags.join("")}</div></td>
-            <td style="max-width:340px;">
+            <td style="max-width:360px;">
               <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-secondary);" class="sensitive-data" title="${esc(summaryText)}">
                 ${esc(summaryText)}
               </div>
             </td>
-            <td style="color:var(--text-muted); font-size:13px;" class="sensitive-data">${esc(contactLine)}</td>
+            <td>${remBadge}</td>
             <td style="color:var(--text-muted); text-align:right;">${ico("chevronRight")}</td>
           </tr>
         `;
@@ -491,13 +472,14 @@ async function renderPeopleListView(container) {
 }
 
 // ============================================================================
-// 2. SCHEDA PERSONA
+// 2. SCHEDA PERSONA (4 TAB ESSENZIALI: PROFILO, CLINICA & SCALE, PACCHETTI, DOCUMENTI)
 // ============================================================================
 
 async function renderPersonDossierView(container, personId) {
   const dossier = await apiFetch(`/api/people/${personId}`);
   const p = dossier.person;
-  const sum = dossier.summary || {};
+  const activePackages = (dossier.packages || []).filter((k) => k.status === "attivo");
+  const totalRemSessions = activePackages.reduce((acc, k) => acc + Number(k.remaining_sessions || 0), 0);
 
   state.selectedPersonTab = normalizePersonTab(state.selectedPersonTab);
 
@@ -508,9 +490,8 @@ async function renderPersonDossierView(container, personId) {
 
   const tabs = [
     { id: "profilo", label: "Profilo", count: null },
-    { id: "fisio", label: "Fisio & Scale", count: totalScalesCount || dossier.physio.episodes.length || null },
-    { id: "fitness", label: "PT & Fitness", count: dossier.fitness.programs.length || null },
-    { id: "pacchetti", label: "Pacchetti", count: dossier.packages.length || null },
+    { id: "fisio", label: "Clinica & Scale", count: totalScalesCount || dossier.physio.episodes.length || null },
+    { id: "pacchetti", label: "Pacchetti", count: activePackages.length ? `${totalRemSessions} rim.` : dossier.packages.length || null },
     { id: "documenti", label: "Documenti", count: dossier.attachments.length + dossier.consents.length || null }
   ];
 
@@ -544,13 +525,10 @@ async function renderPersonDossierView(container, personId) {
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         ${
-          sum.total_due_cents > 0
-            ? `<span class="tag tag-danger num sensitive-data">Da incassare: ${formatEur(sum.total_due_cents)}</span>`
-            : ""
-        }
-        ${
-          sum.total_remaining_sessions > 0
-            ? `<span class="tag num">${sum.total_remaining_sessions} sedute residue</span>`
+          totalRemSessions > 0
+            ? `<button class="btn btn-sm btn-secondary" id="headerGoPackagesBtn">
+                <strong class="num">${totalRemSessions}</strong> sedute rimanenti
+               </button>`
             : ""
         }
       </div>
@@ -562,7 +540,7 @@ async function renderPersonDossierView(container, personId) {
           (t) => `
           <button class="tab-btn ${state.selectedPersonTab === t.id ? "active" : ""}" data-person-subtab="${t.id}">
             <span>${t.label}</span>
-            ${t.count ? `<span class="tab-count num">${t.count}</span>` : ""}
+            ${t.count ? `<span class="tab-count num">${esc(t.count)}</span>` : ""}
           </button>
         `
         )
@@ -576,6 +554,11 @@ async function renderPersonDossierView(container, personId) {
     state.selectedPersonId = null;
     state.profileEditMode = false;
     await renderPeopleListView(container);
+  });
+
+  document.getElementById("headerGoPackagesBtn")?.addEventListener("click", async () => {
+    state.selectedPersonTab = "pacchetti";
+    await renderPersonDossierView(container, p.id);
   });
 
   document.getElementById("deletePersonBtn")?.addEventListener("click", async () => {
@@ -599,10 +582,8 @@ async function renderPersonDossierView(container, personId) {
     renderPersonTabProfilo(subViewport, dossier);
   } else if (state.selectedPersonTab === "fisio") {
     renderPersonTabFisio(subViewport, dossier);
-  } else if (state.selectedPersonTab === "fitness") {
-    renderPersonTabFitness(subViewport, dossier);
   } else if (state.selectedPersonTab === "pacchetti") {
-    renderPersonTabPacchettiAndAppts(subViewport, dossier);
+    renderPersonTabPacchetti(subViewport, dossier);
   } else if (state.selectedPersonTab === "documenti") {
     renderPersonTabDocumenti(subViewport, dossier);
   }
@@ -620,7 +601,7 @@ function renderPersonTabProfilo(viewport, dossier) {
     ? `
       <div class="notice-strip">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
-          <strong style="font-size:13px; color:var(--warning);">Limitazioni attive (${lims.length})</strong>
+          <strong style="font-size:13px; color:var(--warning);">Attenzioni / limitazioni (${lims.length})</strong>
           <button class="btn btn-xs btn-secondary" id="addSharedLimBtn">${ico("plus")} Aggiungi</button>
         </div>
         ${lims
@@ -636,7 +617,8 @@ function renderPersonTabProfilo(viewport, dossier) {
     : "";
 
   if (!state.profileEditMode) {
-    const val = (v) => (v !== null && v !== undefined && String(v).trim() !== "" ? esc(v) : `<span style="color:var(--text-muted);">—</span>`);
+    const val = (v) =>
+      v !== null && v !== undefined && String(v).trim() !== "" ? esc(v) : `<span style="color:var(--text-muted);">—</span>`;
     const weightStr =
       p.weight_kg !== null && p.weight_kg !== undefined && p.weight_kg !== ""
         ? `${p.weight_kg} kg${p.weight_updated_at ? ` (${formatDateIt(p.weight_updated_at)})` : ""}`
@@ -652,9 +634,9 @@ function renderPersonTabProfilo(viewport, dossier) {
 
       <div class="grid-2">
         <div class="card">
-          <div class="card-header"><h3 class="card-title">Anamnesi e quadro clinico</h3></div>
+          <div class="card-header"><h3 class="card-title">Problematiche e anamnesi</h3></div>
           <div class="info-block">
-            <div class="info-item-label">Dolori e limitazioni attuali</div>
+            <div class="info-item-label">Dolori e problematiche attuali</div>
             <div class="info-item-val sensitive-data">${val(p.current_pain_notes)}</div>
           </div>
           <div class="info-block">
@@ -664,13 +646,13 @@ function renderPersonTabProfilo(viewport, dossier) {
         </div>
 
         <div class="card">
-          <div class="card-header"><h3 class="card-title">Sport e obiettivi</h3></div>
+          <div class="card-header"><h3 class="card-title">Sport, obiettivi e note</h3></div>
           <div class="info-block">
             <div class="info-item-label">Obiettivi</div>
             <div class="info-item-val sensitive-data">${val(p.goals)}</div>
           </div>
           <div class="info-block">
-            <div class="info-item-label">Attività / Allenamento</div>
+            <div class="info-item-label">Attività / Sport</div>
             <div class="info-item-val sensitive-data">${val(p.sport_activity)}</div>
           </div>
           <div class="grid-2" style="gap:12px;">
@@ -686,7 +668,7 @@ function renderPersonTabProfilo(viewport, dossier) {
           ${
             p.general_notes
               ? `<div class="info-block" style="margin-top:12px;">
-                  <div class="info-item-label">Note</div>
+                  <div class="info-item-label">Note generali</div>
                   <div class="info-item-val sensitive-data">${esc(p.general_notes)}</div>
                 </div>`
               : ""
@@ -695,7 +677,7 @@ function renderPersonTabProfilo(viewport, dossier) {
       </div>
 
       <div class="card">
-        <div class="card-header"><h3 class="card-title">Dati anagrafici e misure</h3></div>
+        <div class="card-header"><h3 class="card-title">Dati personali e misure</h3></div>
         <div class="info-grid sensitive-data">
           <div><div class="info-item-label">Data di nascita</div><div class="info-item-val num">${p.birth_date ? formatDateIt(p.birth_date) : "—"}</div></div>
           <div><div class="info-item-label">Sesso</div><div class="info-item-val">${val(p.gender)}</div></div>
@@ -731,18 +713,9 @@ function renderPersonTabProfilo(viewport, dossier) {
 
         <div class="form-section-title">Anagrafica e misure</div>
         <div class="grid-3">
-          <div class="form-group">
-            <label class="form-label">Nome *</label>
-            <input class="form-control" name="first_name" value="${esc(p.first_name)}" required />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Cognome *</label>
-            <input class="form-control" name="last_name" value="${esc(p.last_name)}" required />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Data di nascita</label>
-            <input class="form-control" type="date" name="birth_date" value="${esc(p.birth_date || "")}" />
-          </div>
+          <div class="form-group"><label class="form-label">Nome *</label><input class="form-control" name="first_name" value="${esc(p.first_name)}" required /></div>
+          <div class="form-group"><label class="form-label">Cognome *</label><input class="form-control" name="last_name" value="${esc(p.last_name)}" required /></div>
+          <div class="form-group"><label class="form-label">Data di nascita</label><input class="form-control" type="date" name="birth_date" value="${esc(p.birth_date || "")}" /></div>
         </div>
         <div class="grid-4">
           <div class="form-group">
@@ -754,43 +727,21 @@ function renderPersonTabProfilo(viewport, dossier) {
               <option value="Altro" ${p.gender === "Altro" ? "selected" : ""}>Altro</option>
             </select>
           </div>
-          <div class="form-group">
-            <label class="form-label">Altezza (cm)</label>
-            <input class="form-control" type="number" min="80" max="240" name="height_cm" value="${p.height_cm ?? ""}" />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Peso (kg)</label>
-            <input class="form-control" type="number" min="20" max="250" step="0.1" name="weight_kg" value="${p.weight_kg ?? ""}" />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Data peso</label>
-            <input class="form-control" type="date" name="weight_updated_at" value="${esc(p.weight_updated_at || "")}" />
-          </div>
+          <div class="form-group"><label class="form-label">Altezza (cm)</label><input class="form-control" type="number" min="80" max="240" name="height_cm" value="${p.height_cm ?? ""}" /></div>
+          <div class="form-group"><label class="form-label">Peso (kg)</label><input class="form-control" type="number" min="20" max="250" step="0.1" name="weight_kg" value="${p.weight_kg ?? ""}" /></div>
+          <div class="form-group"><label class="form-label">Data peso</label><input class="form-control" type="date" name="weight_updated_at" value="${esc(p.weight_updated_at || "")}" /></div>
         </div>
         <div class="grid-3">
-          <div class="form-group">
-            <label class="form-label">Telefono</label>
-            <input class="form-control" name="phone" value="${esc(p.phone || "")}" />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Email</label>
-            <input class="form-control" type="email" name="email" value="${esc(p.email || "")}" />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Professione</label>
-            <input class="form-control" name="profession" value="${esc(p.profession || "")}" />
-          </div>
+          <div class="form-group"><label class="form-label">Telefono</label><input class="form-control" name="phone" value="${esc(p.phone || "")}" /></div>
+          <div class="form-group"><label class="form-label">Email</label><input class="form-control" type="email" name="email" value="${esc(p.email || "")}" /></div>
+          <div class="form-group"><label class="form-label">Professione</label><input class="form-control" name="profession" value="${esc(p.profession || "")}" /></div>
         </div>
         <div class="grid-3">
           <div class="form-group">
             <label class="form-label">Percorsi</label>
             <div style="display:flex; gap:16px; padding-top:6px;">
-              <label style="display:flex; align-items:center; gap:6px; font-size:13.5px; cursor:pointer;">
-                <input type="checkbox" name="physio_active" ${p.physio_active ? "checked" : ""} /> Fisio
-              </label>
-              <label style="display:flex; align-items:center; gap:6px; font-size:13.5px; cursor:pointer;">
-                <input type="checkbox" name="fitness_active" ${p.fitness_active ? "checked" : ""} /> PT
-              </label>
+              <label style="display:flex; align-items:center; gap:6px; font-size:13.5px; cursor:pointer;"><input type="checkbox" name="physio_active" ${p.physio_active ? "checked" : ""} /> Fisio</label>
+              <label style="display:flex; align-items:center; gap:6px; font-size:13.5px; cursor:pointer;"><input type="checkbox" name="fitness_active" ${p.fitness_active ? "checked" : ""} /> PT</label>
             </div>
           </div>
           <div class="form-group">
@@ -809,43 +760,22 @@ function renderPersonTabProfilo(viewport, dossier) {
           </div>
         </div>
 
-        <div class="form-section-title">Anamnesi</div>
+        <div class="form-section-title">Problematiche e anamnesi</div>
         <div class="grid-2">
-          <div class="form-group">
-            <label class="form-label">Dolori e limitazioni attuali</label>
-            <textarea class="form-control" rows="3" name="current_pain_notes">${esc(p.current_pain_notes || "")}</textarea>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Storia clinica, infortuni, interventi</label>
-            <textarea class="form-control" rows="3" name="medical_history">${esc(p.medical_history || "")}</textarea>
-          </div>
+          <div class="form-group"><label class="form-label">Dolori e problematiche attuali</label><textarea class="form-control" rows="3" name="current_pain_notes">${esc(p.current_pain_notes || "")}</textarea></div>
+          <div class="form-group"><label class="form-label">Storia clinica, infortuni, interventi</label><textarea class="form-control" rows="3" name="medical_history">${esc(p.medical_history || "")}</textarea></div>
         </div>
 
         <div class="form-section-title">Sport e obiettivi</div>
         <div class="grid-2">
-          <div class="form-group">
-            <label class="form-label">Obiettivi</label>
-            <textarea class="form-control" rows="2" name="goals">${esc(p.goals || "")}</textarea>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Sport / Allenamento</label>
-            <textarea class="form-control" rows="2" name="sport_activity">${esc(p.sport_activity || "")}</textarea>
-          </div>
+          <div class="form-group"><label class="form-label">Obiettivi</label><textarea class="form-control" rows="2" name="goals">${esc(p.goals || "")}</textarea></div>
+          <div class="form-group"><label class="form-label">Sport / Attività</label><textarea class="form-control" rows="2" name="sport_activity">${esc(p.sport_activity || "")}</textarea></div>
         </div>
         <div class="grid-2">
-          <div class="form-group">
-            <label class="form-label">Frequenza settimanale</label>
-            <input class="form-control" name="training_frequency" value="${esc(p.training_frequency || "")}" />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Dove si allena</label>
-            <input class="form-control" name="training_location" value="${esc(p.training_location || "")}" />
-          </div>
+          <div class="form-group"><label class="form-label">Frequenza settimanale</label><input class="form-control" name="training_frequency" value="${esc(p.training_frequency || "")}" /></div>
+          <div class="form-group"><label class="form-label">Dove si allena</label><input class="form-control" name="training_location" value="${esc(p.training_location || "")}" /></div>
         </div>
-        <div class="form-group">
-          <label class="form-label">Note generali</label>
-          <textarea class="form-control" rows="2" name="general_notes">${esc(p.general_notes || "")}</textarea>
-        </div>
+        <div class="form-group"><label class="form-label">Note generali</label><textarea class="form-control" rows="2" name="general_notes">${esc(p.general_notes || "")}</textarea></div>
 
         <div class="modal-footer" style="margin-top:16px;">
           <button type="button" class="btn btn-secondary" id="cancelProfileEditBtn2">Annulla</button>
@@ -899,7 +829,7 @@ function renderPersonTabProfilo(viewport, dossier) {
 }
 
 // ============================================================================
-// TAB 2: FISIO & SCALE (SCALE IN PRIMO PIANO, IMPORT CSV TALLY, FLAGS RICHIUDIBILI)
+// TAB 2: CLINICA & SCALE
 // ============================================================================
 
 async function ensureActiveEpisode(person, episodes) {
@@ -910,7 +840,7 @@ async function ensureActiveEpisode(person, episodes) {
     method: "POST",
     body: {
       person_id: person.id,
-      title: "Percorso fisioterapico",
+      title: "Valutazione clinica",
       chief_complaint: person.current_pain_notes || "Valutazione e monitoraggio",
       body_region: "",
       laterality: "DX",
@@ -934,8 +864,8 @@ function renderPersonTabFisio(viewport, dossier) {
     viewport.innerHTML = `
       <div class="card">
         <div class="empty-state">
-          <div style="font-weight:600; color:var(--text); margin-bottom:6px;">Nessun percorso fisioterapico attivo</div>
-          <div style="margin-bottom:16px;">Crea un episodio clinico oppure importa subito una scala da CSV Tally.</div>
+          <div style="font-weight:600; color:var(--text); margin-bottom:6px;">Nessun episodio clinico presente</div>
+          <div style="margin-bottom:16px;">Crea una problematica / episodio oppure importa subito le scale da CSV Tally.</div>
           <div style="display:flex; justify-content:center; gap:8px; flex-wrap:wrap;">
             <button class="btn btn-primary" id="createFirstEpisodeBtn">${ico("plus")} Nuovo episodio</button>
             <button class="btn btn-secondary" id="quickImportTallyBtn">${ico("upload")} Importa CSV Tally</button>
@@ -980,10 +910,10 @@ function renderPersonTabFisio(viewport, dossier) {
               )
               .join("")}
           </select>
-          <button class="btn btn-sm btn-ghost" id="newPhysioEpisodeBtn" title="Nuovo episodio">${ico("plus")} Episodio</button>
+          <button class="btn btn-sm btn-ghost" id="newPhysioEpisodeBtn">${ico("plus")} Episodio</button>
         </div>
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
-          <button class="btn btn-sm btn-ghost" id="shareLimFromPhysioBtn">Limitazione PT</button>
+          <button class="btn btn-sm btn-ghost" id="shareLimFromPhysioBtn">+ Limitazione</button>
           <button class="btn btn-sm btn-ghost" id="closeEpisodeModalBtn">Stato</button>
         </div>
       </div>
@@ -995,21 +925,19 @@ function renderPersonTabFisio(viewport, dossier) {
       </div>
     </div>
 
-    <!-- 1. SCALE E QUESTIONARI (SUBITO IN PRIMO PIANO) -->
+    <!-- 1. SCALE E QUESTIONARI -->
     <div class="card">
       <div class="card-header">
-        <div>
-          <h3 class="card-title">Scale e questionari</h3>
-        </div>
+        <h3 class="card-title">Scale e questionari</h3>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
           <button class="btn btn-sm btn-secondary" id="importTallyCsvBtn">${ico("upload")} Importa CSV Tally</button>
           <button class="btn btn-sm btn-primary" id="recordOutcomeMeasureBtn">${ico("plus")} Registra scala</button>
         </div>
       </div>
-      ${renderOutcomeMeasuresSection(activeEp.outcome_comparisons, activeEp.outcome_measures)}
+      ${renderOutcomeMeasuresSection(activeEp.outcome_comparisons)}
     </div>
 
-    <!-- 2. NOTE DI SEDUTA (SOAP) -->
+    <!-- 2. NOTE DI SEDUTA -->
     <div class="card">
       <div class="card-header">
         <h3 class="card-title">Note di seduta</h3>
@@ -1021,7 +949,7 @@ function renderPersonTabFisio(viewport, dossier) {
       ${renderClinicalNotesList(activeEp.notes)}
     </div>
 
-    <!-- 3. VALUTAZIONI CLINICHE E MAPPA CORPO -->
+    <!-- 3. VALUTAZIONI E MAPPA CORPO -->
     <div class="card">
       <div class="card-header">
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
@@ -1075,7 +1003,6 @@ function renderPersonTabFisio(viewport, dossier) {
     </details>
   `;
 
-  // Event listeners
   document.getElementById("physioEpisodeSelect")?.addEventListener("change", async (e) => {
     state.selectedEpisodeId = Number(e.target.value);
     state.selectedEvalId = null;
@@ -1090,17 +1017,14 @@ function renderPersonTabFisio(viewport, dossier) {
     showAddSharedLimitationModal(p.id, episodes, activeEp.id)
   );
   document.getElementById("closeEpisodeModalBtn")?.addEventListener("click", () => showCloseEpisodeModal(activeEp));
-
   document.getElementById("importTallyCsvBtn")?.addEventListener("click", () => showImportTallyCsvModal(activeEp.id));
   document.getElementById("recordOutcomeMeasureBtn")?.addEventListener("click", () =>
     showRecordOutcomeModal(activeEp.id, currentEval ? currentEval.id : null)
   );
-
   document.getElementById("newSoapNoteBtn")?.addEventListener("click", () => showSoapNoteModal(activeEp, null));
   document.getElementById("copyPrevNoteAsDraftBtn")?.addEventListener("click", () =>
     showSoapNoteModal(activeEp, null, activeEp.notes[0])
   );
-
   document.getElementById("newEvalModalBtn")?.addEventListener("click", () =>
     showEvaluationModal(activeEp, null, evals.length ? "rivalutazione" : "prima_valutazione")
   );
@@ -1112,21 +1036,13 @@ function renderPersonTabFisio(viewport, dossier) {
   );
   document.getElementById("addCustomFlagBtn")?.addEventListener("click", () => showCustomFlagModal(activeEp.id));
 
-  // Inline quick-update status on flags
   viewport.querySelectorAll("[data-quick-flag-status]").forEach((sel) => {
     sel.addEventListener("change", async () => {
-      const fid = Number(sel.getAttribute("data-quick-flag-status"));
-      const fl = activeEp.flags.find((x) => x.id === fid);
+      const fl = activeEp.flags.find((x) => x.id === Number(sel.getAttribute("data-quick-flag-status")));
       if (!fl) return;
       await apiFetch("/api/physio/flags", {
         method: "PUT",
-        body: {
-          id: fl.id,
-          status: sel.value,
-          source_info: fl.source_info || "Valutazione clinica",
-          notes: fl.notes || "",
-          action_taken: fl.action_taken || ""
-        }
+        body: { id: fl.id, status: sel.value, source_info: fl.source_info || "Valutazione clinica", notes: fl.notes || "", action_taken: fl.action_taken || "" }
       });
       await refreshCurrentView();
     });
@@ -1134,32 +1050,28 @@ function renderPersonTabFisio(viewport, dossier) {
 
   viewport.querySelectorAll("[data-edit-flag]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const fid = Number(btn.getAttribute("data-edit-flag"));
-      const fl = activeEp.flags.find((x) => x.id === fid);
+      const fl = activeEp.flags.find((x) => x.id === Number(btn.getAttribute("data-edit-flag")));
       if (fl) showEditFlagModal(fl);
     });
   });
 
   viewport.querySelectorAll("[data-del-outcome]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const oid = Number(btn.getAttribute("data-del-outcome"));
       if (!window.confirm("Eliminare questa rilevazione?")) return;
-      await apiFetch(`/api/physio/outcome-measures/${oid}`, { method: "DELETE" });
+      await apiFetch(`/api/physio/outcome-measures/${Number(btn.getAttribute("data-del-outcome"))}`, { method: "DELETE" });
       await refreshCurrentView();
     });
   });
 
   viewport.querySelectorAll("[data-edit-soap]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const nid = Number(btn.getAttribute("data-edit-soap"));
-      const note = activeEp.notes.find((x) => x.id === nid);
+      const note = activeEp.notes.find((x) => x.id === Number(btn.getAttribute("data-edit-soap")));
       if (note) showSoapNoteModal(activeEp, note);
     });
   });
   viewport.querySelectorAll("[data-addendum-soap]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const nid = Number(btn.getAttribute("data-addendum-soap"));
-      const note = activeEp.notes.find((x) => x.id === nid);
+      const note = activeEp.notes.find((x) => x.id === Number(btn.getAttribute("data-addendum-soap")));
       if (note) showAddendumModal({ note_id: note.id, title: `Nota del ${formatDateIt(note.note_date)}` });
     });
   });
@@ -1174,7 +1086,6 @@ function renderOutcomeMeasuresSection(comparisons) {
     .map((c) => {
       const seriesDesc = [...(c.series || [])].reverse();
       const latest = seriesDesc[0];
-      const latestBreakdown = computeScaleBreakdown(c.scale_code, latest?.responses, latest?.score_value);
       const deltaBadge =
         c.numeric_delta !== null
           ? `<span class="tag ${c.numeric_delta < 0 ? "tag-success" : c.numeric_delta > 0 ? "tag-warning" : ""} num">${c.numeric_delta > 0 ? "+" : ""}${c.numeric_delta}${esc(c.score_unit)}</span>`
@@ -1452,215 +1363,26 @@ function renderClinicalFlagsTable(flags) {
 }
 
 // ============================================================================
-// TAB 3: PT & FITNESS
+// TAB 3: PACCHETTI DELLA PERSONA (SOLO CONTEGGIO SEDUTE — ZERO SOLDI)
 // ============================================================================
 
-function renderPersonTabFitness(viewport, dossier) {
-  const p = dossier.person;
-  const prof = dossier.fitness.profile || {};
-  const programs = dossier.fitness.programs || [];
-  const logs = dossier.fitness.workout_logs || [];
-  const metrics = dossier.fitness.metrics || [];
-  const activeLims = (dossier.shared_limitations || []).filter((l) => l.is_active);
-
-  const limsHtml = activeLims.length
-    ? `
-      <div class="notice-strip">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-          <strong style="font-size:13px; color:var(--warning);">Limitazioni dal percorso Fisio</strong>
-          <button class="btn btn-xs btn-secondary" id="jumpToPhysioFromFitnessBtn">Apri Fisio</button>
-        </div>
-        ${activeLims
-          .map(
-            (l) =>
-              `<div style="font-size:13px; margin-top:4px;" class="sensitive-data"><strong>${esc(l.title)}</strong> (${esc(l.laterality || "N/A")}) — ${esc(l.description)}</div>`
-          )
-          .join("")}
-      </div>
-    `
-    : "";
-
-  const programsHtml = programs.length
-    ? programs
-        .map((prog) => {
-          const daysHtml = (prog.workouts || [])
-            .map(
-              (d, dIdx) => `
-              <div style="border:1px solid var(--border); border-radius:var(--radius-md); padding:12px; margin-top:10px; background:var(--bg-hover);">
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
-                  <strong style="font-size:13.5px;">${esc(d.day_name)}</strong>
-                  <button class="btn btn-xs btn-secondary" data-log-workout-prog="${prog.id}" data-day-idx="${dIdx}">Registra seduta</button>
-                </div>
-                <div class="table-wrap">
-                  <table class="data-table data-table-compact">
-                    <thead><tr><th>Esercizio</th><th>Serie</th><th>Rip.</th><th>Carico</th><th>Rec.</th><th>RPE</th><th>Note</th></tr></thead>
-                    <tbody>
-                      ${(d.exercises || [])
-                        .map(
-                          (ex) =>
-                            `<tr><td><strong>${esc(ex.name)}</strong></td><td class="num">${esc(ex.sets)}</td><td class="num">${esc(ex.reps)}</td><td class="num">${esc(ex.load)}</td><td class="num">${esc(ex.rest || "—")}</td><td class="num">${esc(ex.rpe || "—")}</td><td style="color:var(--text-muted);">${esc(ex.notes || "—")}</td></tr>`
-                        )
-                        .join("")}
-                    </tbody>
-                  </table>
-                </div>
-              </div>`
-            )
-            .join("");
-
-          return `
-            <div class="card">
-              <div class="card-header">
-                <div>
-                  <div style="display:flex; align-items:center; gap:8px;">
-                    <h4 class="card-title">${esc(prog.title)}</h4>
-                    <span class="tag">v${prog.version} · ${esc(prog.status)}</span>
-                  </div>
-                  <div class="card-subtitle">${esc(prog.goal)} · dal ${formatDateIt(prog.start_date)}</div>
-                </div>
-                <button class="btn btn-sm btn-secondary" data-edit-program="${prog.id}">${ico("edit")} Modifica</button>
-              </div>
-              ${daysHtml}
-            </div>
-          `;
-        })
-        .join("")
-    : `<div class="card"><div style="color:var(--text-muted); font-size:13px;">Nessun programma di allenamento creato.</div></div>`;
-
-  const logsHtml = logs.length
-    ? logs
-        .map((wl) => {
-          const compRows = (wl.actual_exercises || [])
-            .map((act, idx) => {
-              const plan = (wl.planned_exercises || [])[idx] || {};
-              return `
-                <tr>
-                  <td><strong>${esc(act.name || plan.name)}</strong></td>
-                  <td class="num" style="color:var(--text-muted);">${esc(plan.sets || "—")} × ${esc(plan.reps || "—")} @ ${esc(plan.load || "—")}</td>
-                  <td class="num" style="font-weight:600;">${esc(act.sets)} × ${esc(act.reps)} @ ${esc(act.load)}${act.rpe ? ` (RPE ${esc(act.rpe)})` : ""}</td>
-                </tr>`;
-            })
-            .join("");
-          return `
-            <div style="border:1px solid var(--border); border-radius:var(--radius-md); padding:12px; margin-bottom:10px;">
-              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
-                <div>
-                  <strong>${esc(wl.workout_day_name)}</strong>
-                  <span class="num" style="color:var(--text-muted); font-size:12.5px; margin-left:6px;">${formatDateIt(wl.session_date)}</span>
-                  ${wl.session_rpe ? `<span class="tag num" style="margin-left:6px;">RPE ${wl.session_rpe}</span>` : ""}
-                </div>
-                ${wl.reported_symptoms ? `<span class="tag tag-warning">Sintomi (${wl.symptom_severity}/10)</span>` : ""}
-              </div>
-              <div class="table-wrap">
-                <table class="data-table data-table-compact">
-                  <thead><tr><th>Esercizio</th><th>Programmato</th><th>Svolto</th></tr></thead>
-                  <tbody>${compRows}</tbody>
-                </table>
-              </div>
-              ${
-                wl.client_feedback || wl.reported_symptoms || wl.next_session_notes
-                  ? `<div style="font-size:12.5px; color:var(--text-secondary); margin-top:8px;" class="sensitive-data">
-                      ${wl.client_feedback ? `<div><strong>Feedback:</strong> ${esc(wl.client_feedback)}</div>` : ""}
-                      ${wl.reported_symptoms ? `<div style="color:var(--warning);"><strong>Sintomi:</strong> ${esc(wl.reported_symptoms)}</div>` : ""}
-                      ${wl.next_session_notes ? `<div><strong>Prossima seduta:</strong> ${esc(wl.next_session_notes)}</div>` : ""}
-                    </div>`
-                  : ""
-              }
-            </div>`;
-        })
-        .join("")
-    : `<div style="color:var(--text-muted); font-size:13px;">Nessuna seduta registrata.</div>`;
-
-  viewport.innerHTML = `
-    ${limsHtml}
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">Profilo PT</h3>
-          <button class="btn btn-sm btn-secondary" id="editFitnessProfileBtn">${ico("edit")} Modifica</button>
-        </div>
-        <div class="info-block"><div class="info-item-label">Obiettivi</div><div class="info-item-val">${esc(prof.primary_goals || p.goals || "—")}</div></div>
-        <div class="grid-2" style="gap:10px; margin-bottom:12px;">
-          <div><div class="info-item-label">Esperienza</div><div class="info-item-val">${esc(prof.experience_level || "—")}</div></div>
-          <div><div class="info-item-label">Disponibilità</div><div class="info-item-val">${esc(prof.weekly_availability || p.training_frequency || "—")}</div></div>
-        </div>
-        <div class="info-block"><div class="info-item-label">Attrezzatura</div><div class="info-item-val">${esc(prof.available_equipment || "—")}</div></div>
-        ${prof.initial_assessment_notes ? `<div class="info-block"><div class="info-item-label">Note iniziali</div><div class="info-item-val">${esc(prof.initial_assessment_notes)}</div></div>` : ""}
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">Test e misurazioni</h3>
-          <button class="btn btn-sm btn-secondary" id="addFitnessMetricBtn">${ico("plus")} Nuovo test</button>
-        </div>
-        <div class="table-wrap">
-          <table class="data-table data-table-compact">
-            <thead><tr><th>Data</th><th>Test</th><th>Valore</th><th>Note</th></tr></thead>
-            <tbody>
-              ${
-                metrics.length
-                  ? metrics
-                      .map(
-                        (m) =>
-                          `<tr><td class="num">${formatDateIt(m.recorded_date)}</td><td><strong>${esc(m.metric_name)}</strong></td><td class="num"><strong>${m.value_num} ${esc(m.unit)}</strong></td><td style="color:var(--text-muted);">${esc(m.protocol_notes || "—")}</td></tr>`
-                      )
-                      .join("")
-                  : `<tr><td colspan="4" style="color:var(--text-muted);">Nessun test registrato.</td></tr>`
-              }
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <div style="display:flex; justify-content:space-between; align-items:center; margin:6px 0 12px;">
-      <h3 class="card-title">Programmi di allenamento</h3>
-      <button class="btn btn-sm btn-primary" id="newFitnessProgramBtn">${ico("plus")} Nuovo programma</button>
-    </div>
-    ${programsHtml}
-
-    <div class="card">
-      <div class="card-header">
-        <h3 class="card-title">Diario sedute</h3>
-        <button class="btn btn-sm btn-secondary" id="quickLogWorkoutBtn">${ico("plus")} Registra seduta</button>
-      </div>
-      ${logsHtml}
-    </div>
-  `;
-
-  document.getElementById("jumpToPhysioFromFitnessBtn")?.addEventListener("click", async () => {
-    state.selectedPersonTab = "fisio";
-    await refreshCurrentView();
-  });
-  document.getElementById("editFitnessProfileBtn")?.addEventListener("click", () => showEditFitnessProfileModal(p.id, prof));
-  document.getElementById("addFitnessMetricBtn")?.addEventListener("click", () => showAddFitnessMetricModal(p.id));
-  document.getElementById("newFitnessProgramBtn")?.addEventListener("click", () => showFitnessProgramModal(p.id, null));
-  document.getElementById("quickLogWorkoutBtn")?.addEventListener("click", () =>
-    showWorkoutLogModal(p.id, programs[0] || null, 0)
-  );
-  viewport.querySelectorAll("[data-edit-program]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const prog = programs.find((x) => x.id === Number(btn.getAttribute("data-edit-program")));
-      if (prog) showFitnessProgramModal(p.id, prog);
-    });
-  });
-  viewport.querySelectorAll("[data-log-workout-prog]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const prog = programs.find((x) => x.id === Number(btn.getAttribute("data-log-workout-prog")));
-      if (prog) showWorkoutLogModal(p.id, prog, Number(btn.getAttribute("data-day-idx") || 0));
-    });
-  });
+function renderPackageProgressBar(pkg) {
+  const total = Math.max(1, Number(pkg.total_sessions || 1));
+  const rem = Math.max(0, Number(pkg.remaining_sessions || 0));
+  const pct = Math.min(100, Math.round((rem / total) * 100));
+  const cls = rem === 0 ? "empty" : rem <= 2 ? "low" : "";
+  return `<div class="progress-bar"><div class="progress-fill ${cls}" style="width:${pct}%;"></div></div>`;
 }
 
-// ============================================================================
-// TAB 4: PACCHETTI & APPUNTAMENTI DELLA PERSONA
-// ============================================================================
+function areaLabel(code) {
+  if (code === "fisio") return "Fisio";
+  if (code === "fitness") return "PT";
+  return "Misto";
+}
 
-function renderPersonTabPacchettiAndAppts(viewport, dossier) {
+function renderPersonTabPacchetti(viewport, dossier) {
   const p = dossier.person;
   const packages = dossier.packages || [];
-  const appts = dossier.appointments || [];
 
   const pkgCards = packages.length
     ? packages
@@ -1670,51 +1392,57 @@ function renderPersonTabPacchettiAndAppts(viewport, dossier) {
               (m) => `
               <tr>
                 <td class="num">${formatRomeDateTime(m.created_at)}</td>
-                <td><span class="tag ${m.movement_type === "CONSUME" ? "" : "tag-warning"}">${m.movement_type === "CONSUME" ? "Consumo (−1)" : "Storno (+1)"}</span></td>
-                <td>${esc(m.reason)}</td>
+                <td><span class="tag ${m.movement_type === "CONSUME" ? "" : "tag-warning"}">${m.movement_type === "CONSUME" ? "Seduta svolta (−1)" : "Ripristino (+1)"}</span></td>
+                <td style="color:var(--text-secondary);">${esc(m.reason)}</td>
               </tr>`
             )
             .join("");
 
+          const remColor =
+            pkg.remaining_sessions === 0 ? "var(--text-muted)" : pkg.remaining_sessions <= 2 ? "var(--warning)" : "var(--accent)";
+
           return `
             <div class="card">
-              <div class="card-header">
+              <div class="card-header" style="margin-bottom:12px;">
                 <div>
-                  <div style="display:flex; align-items:center; gap:8px;">
+                  <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                     <h4 class="card-title">${esc(pkg.name)}</h4>
-                    <span class="tag">${esc(pkg.status)}</span>
+                    <span class="tag">${areaLabel(pkg.service_area)}</span>
+                    <span class="tag ${pkg.status === "attivo" ? "tag-accent" : pkg.status === "esaurito" ? "" : "tag-warning"}">${esc(pkg.status)}</span>
                   </div>
-                  <div class="card-subtitle num">Acquistato il ${formatDateIt(pkg.purchased_date)}${pkg.valid_until ? ` · Scadenza ${formatDateIt(pkg.valid_until)}` : ""}</div>
+                  <div class="card-subtitle num">Inizio ${formatDateIt(pkg.purchased_date)}${pkg.valid_until ? ` · Scadenza ${formatDateIt(pkg.valid_until)}` : ""}${pkg.notes ? ` · ${esc(pkg.notes)}` : ""}</div>
                 </div>
-                <div style="display:flex; gap:6px;">
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <button class="btn btn-sm btn-primary" data-pkg-consume="${pkg.id}" ${pkg.remaining_sessions <= 0 || pkg.status === "sospeso" ? "disabled" : ""}>
+                    ${ico("minus")} <span>Seduta svolta</span>
+                  </button>
                   ${
-                    pkg.due_cents > 0
-                      ? `<button class="btn btn-sm btn-primary" data-record-payment-pkg="${pkg.id}" data-person-id="${p.id}" data-due-cents="${pkg.due_cents}">Incassa ${formatEur(pkg.due_cents)}</button>`
-                      : `<span class="tag tag-success">Saldato</span>`
+                    pkg.consumed_sessions > 0
+                      ? `<button class="btn btn-sm btn-secondary" data-pkg-undo="${pkg.id}" title="Ripristina 1 seduta">${ico("rotateCcw")} <span>+1</span></button>`
+                      : ""
                   }
-                  <button class="btn btn-sm btn-secondary" data-pkg-suspend="${pkg.id}" data-pkg-status="${pkg.status}">
+                  <button class="btn btn-sm btn-ghost" data-pkg-suspend="${pkg.id}" data-pkg-status="${pkg.status}">
                     ${pkg.status === "sospeso" ? "Riattiva" : "Sospendi"}
                   </button>
+                  <button class="btn btn-sm btn-danger-ghost" data-pkg-delete="${pkg.id}" title="Elimina pacchetto">${ico("trash")}</button>
                 </div>
               </div>
 
-              <div class="grid-4" style="margin-bottom:12px;">
-                <div class="stat-card"><div class="stat-label">Acquistate</div><div class="stat-value">${pkg.total_sessions}</div></div>
+              <div class="grid-3" style="margin-bottom:12px;">
+                <div class="stat-card"><div class="stat-label">Totali</div><div class="stat-value">${pkg.total_sessions}</div></div>
                 <div class="stat-card"><div class="stat-label">Svolte</div><div class="stat-value">${pkg.consumed_sessions}</div></div>
-                <div class="stat-card"><div class="stat-label">Residue</div><div class="stat-value" style="color:var(--accent);">${pkg.remaining_sessions}</div></div>
-                <div class="stat-card sensitive-data">
-                  <div class="stat-label">Da incassare</div>
-                  <div class="stat-value" style="color:${pkg.due_cents > 0 ? "var(--danger)" : "var(--success)"};">${formatEur(pkg.due_cents)}</div>
-                </div>
+                <div class="stat-card"><div class="stat-label">Rimanenti</div><div class="stat-value" style="color:${remColor};">${pkg.remaining_sessions}</div></div>
               </div>
+
+              ${renderPackageProgressBar(pkg)}
 
               ${
                 pkg.movements?.length
                   ? `<details class="inline-details">
-                      <summary>Movimenti (${pkg.movements.length})</summary>
+                      <summary>Storico sedute (${pkg.movements.length})</summary>
                       <div class="table-wrap" style="margin-top:8px;">
                         <table class="data-table data-table-compact">
-                          <thead><tr><th>Data</th><th>Tipo</th><th>Causale</th></tr></thead>
+                          <thead><tr><th>Data</th><th>Movimento</th><th>Note</th></tr></thead>
                           <tbody>${movRows}</tbody>
                         </table>
                       </div>
@@ -1725,44 +1453,56 @@ function renderPersonTabPacchettiAndAppts(viewport, dossier) {
           `;
         })
         .join("")
-    : `<div class="card"><div style="color:var(--text-muted); font-size:13px;">Nessun pacchetto attivo.</div></div>`;
-
-  const apptRows = appts
-    .map(
-      (a) => `
-      <tr>
-        <td class="num"><strong>${formatRomeDateTime(a.start_at)}</strong> (${a.duration_minutes} min)</td>
-        <td><span class="tag ${a.service_area === "fisio" ? "tag-accent" : ""}">${a.service_area === "fisio" ? "Fisio" : "PT"}</span> ${esc(a.service_name)}</td>
-        <td>${renderApptStatusBadge(a.status)}</td>
-        <td style="text-align:right;"><button class="btn btn-xs btn-secondary" data-open-appt-drawer="${a.id}">Gestisci</button></td>
-      </tr>`
-    )
-    .join("");
+    : `<div class="card"><div class="empty-state">Nessun pacchetto attivo per questa persona.</div></div>`;
 
   viewport.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <h3 class="card-title">Pacchetti</h3>
+      <h3 class="card-title">Pacchetti sedute</h3>
       <button class="btn btn-sm btn-primary" id="personNewPkgBtn">${ico("plus")} Nuovo pacchetto</button>
     </div>
     ${pkgCards}
-
-    <div class="card" style="margin-top:16px;">
-      <div class="card-header">
-        <h3 class="card-title">Appuntamenti</h3>
-        <button class="btn btn-sm btn-secondary" id="personNewApptBtn">${ico("plus")} Nuovo appuntamento</button>
-      </div>
-      <div class="table-wrap">
-        <table class="data-table data-table-compact">
-          <thead><tr><th>Data e ora</th><th>Servizio</th><th>Stato</th><th style="text-align:right;"></th></tr></thead>
-          <tbody>${apptRows || `<tr><td colspan="4" style="color:var(--text-muted);">Nessun appuntamento.</td></tr>`}</tbody>
-        </table>
-      </div>
-    </div>
   `;
 
   document.getElementById("personNewPkgBtn")?.addEventListener("click", () => showNewPackageModal(p.id));
-  document.getElementById("personNewApptBtn")?.addEventListener("click", () => showNewAppointmentModal(p.id));
-  viewport.querySelectorAll("[data-pkg-suspend]").forEach((btn) => {
+  bindPackageActions(viewport);
+}
+
+function bindPackageActions(root) {
+  root.querySelectorAll("[data-pkg-consume]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      const pkgId = Number(btn.getAttribute("data-pkg-consume"));
+      try {
+        await apiFetch(`/api/packages/${pkgId}/movements`, {
+          method: "POST",
+          body: { action: "consume", reason: "Seduta svolta" }
+        });
+        await refreshCurrentView();
+      } catch (err) {
+        btn.disabled = false;
+        alert(err.message);
+      }
+    });
+  });
+
+  root.querySelectorAll("[data-pkg-undo]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      const pkgId = Number(btn.getAttribute("data-pkg-undo"));
+      try {
+        await apiFetch(`/api/packages/${pkgId}/movements`, {
+          method: "POST",
+          body: { action: "undo", reason: "Ripristino seduta" }
+        });
+        await refreshCurrentView();
+      } catch (err) {
+        btn.disabled = false;
+        alert(err.message);
+      }
+    });
+  });
+
+  root.querySelectorAll("[data-pkg-suspend]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const pkgId = Number(btn.getAttribute("data-pkg-suspend"));
       const nextSt = btn.getAttribute("data-pkg-status") === "sospeso" ? "attivo" : "sospeso";
@@ -1770,11 +1510,19 @@ function renderPersonTabPacchettiAndAppts(viewport, dossier) {
       await refreshCurrentView();
     });
   });
-  bindCommonActionButtons(viewport);
+
+  root.querySelectorAll("[data-pkg-delete]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!window.confirm("Eliminare questo pacchetto e il relativo storico sedute?")) return;
+      const pkgId = Number(btn.getAttribute("data-pkg-delete"));
+      await apiFetch(`/api/packages/${pkgId}`, { method: "DELETE" });
+      await refreshCurrentView();
+    });
+  });
 }
 
 // ============================================================================
-// TAB 5: DOCUMENTI, CONSENSI E CRONOLOGIA
+// TAB 4: DOCUMENTI, CONSENSI E CRONOLOGIA
 // ============================================================================
 
 function renderPersonTabDocumenti(viewport, dossier) {
@@ -1876,16 +1624,16 @@ function renderPersonTabDocumenti(viewport, dossier) {
 }
 
 // ============================================================================
-// 3. VISTA GLOBALE PACCHETTI
+// 3. VISTA GLOBALE PACCHETTI (SOLO SEDUTE — 1 CLIC PER SCALARE)
 // ============================================================================
 
 async function renderPackagesView(container) {
   const data = await apiFetch("/api/packages");
   const packages = data.packages || [];
 
-  const activeCount = packages.filter((k) => k.status === "attivo").length;
-  const remainingTotal = packages.filter((k) => k.status === "attivo").reduce((a, k) => a + Number(k.remaining_sessions || 0), 0);
-  const dueTotal = packages.filter((k) => k.status !== "annullato").reduce((a, k) => a + Number(k.due_cents || 0), 0);
+  const activePkgs = packages.filter((k) => k.status === "attivo");
+  const remainingTotal = activePkgs.reduce((a, k) => a + Number(k.remaining_sessions || 0), 0);
+  const lowCount = activePkgs.filter((k) => Number(k.remaining_sessions || 0) <= 2).length;
 
   const rows = packages
     .map(
@@ -1896,22 +1644,25 @@ async function renderPackagesView(container) {
             ${esc(pkg.last_name)} ${esc(pkg.first_name)}
           </a>
         </td>
-        <td><strong>${esc(pkg.name)}</strong> <span class="tag" style="margin-left:4px;">${esc(pkg.service_area)}</span></td>
-        <td class="num"><strong>${pkg.consumed_sessions}</strong> / ${pkg.total_sessions} <span style="color:var(--text-muted);">(${pkg.remaining_sessions} residue)</span></td>
-        <td class="num sensitive-data">
-          ${formatEur(pkg.price_cents)}
-          ${
-            pkg.due_cents > 0
-              ? ` · <span style="color:var(--danger); font-weight:600;">Da incassare ${formatEur(pkg.due_cents)}</span>`
-              : ` · <span style="color:var(--success);">Saldato</span>`
-          }
+        <td>
+          <div style="font-weight:500;">${esc(pkg.name)}</div>
+          <div style="display:flex; gap:4px; margin-top:3px;">
+            <span class="tag">${areaLabel(pkg.service_area)}</span>
+            ${pkg.status !== "attivo" ? `<span class="tag">${esc(pkg.status)}</span>` : ""}
+          </div>
+        </td>
+        <td style="min-width:140px;">
+          <div class="num" style="font-size:12.5px; color:var(--text-secondary); margin-bottom:4px;">${pkg.consumed_sessions} / ${pkg.total_sessions} svolte</div>
+          ${renderPackageProgressBar(pkg)}
+        </td>
+        <td>
+          <span class="tag ${pkg.remaining_sessions === 0 ? "" : pkg.remaining_sessions <= 2 ? "tag-warning" : "tag-accent"} num">
+            <strong>${pkg.remaining_sessions}</strong> rim.
+          </span>
         </td>
         <td style="text-align:right; white-space:nowrap;">
-          ${
-            pkg.due_cents > 0
-              ? `<button class="btn btn-xs btn-primary" data-record-payment-pkg="${pkg.id}" data-person-id="${pkg.person_id}" data-due-cents="${pkg.due_cents}">Incassa</button>`
-              : ""
-          }
+          <button class="btn btn-xs btn-primary" data-pkg-consume="${pkg.id}" ${pkg.remaining_sessions <= 0 || pkg.status === "sospeso" ? "disabled" : ""}>−1 seduta</button>
+          ${pkg.consumed_sessions > 0 ? `<button class="btn btn-xs btn-secondary" data-pkg-undo="${pkg.id}" title="Ripristina +1">+1</button>` : ""}
           <button class="btn btn-xs btn-ghost" data-open-person="${pkg.person_id}" data-person-tab="pacchetti">Scheda</button>
         </td>
       </tr>`
@@ -1925,12 +1676,9 @@ async function renderPackagesView(container) {
     </div>
 
     <div class="grid-3" style="margin-bottom:16px;">
-      <div class="stat-card"><div class="stat-label">Pacchetti attivi</div><div class="stat-value">${activeCount}</div></div>
-      <div class="stat-card"><div class="stat-label">Sedute residue</div><div class="stat-value">${remainingTotal}</div></div>
-      <div class="stat-card sensitive-data">
-        <div class="stat-label">Da incassare</div>
-        <div class="stat-value" style="color:${dueTotal > 0 ? "var(--danger)" : "var(--text)"};">${formatEur(dueTotal)}</div>
-      </div>
+      <div class="stat-card"><div class="stat-label">Pacchetti attivi</div><div class="stat-value">${activePkgs.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Sedute rimanenti</div><div class="stat-value" style="color:var(--accent);">${remainingTotal}</div></div>
+      <div class="stat-card"><div class="stat-label">In esaurimento (≤ 2)</div><div class="stat-value" style="color:${lowCount > 0 ? "var(--warning)" : "var(--text)"};">${lowCount}</div></div>
     </div>
 
     <div class="card card-flush">
@@ -1940,8 +1688,8 @@ async function renderPackagesView(container) {
             <tr>
               <th>Persona</th>
               <th>Pacchetto</th>
-              <th>Sedute</th>
-              <th>Saldo</th>
+              <th>Progresso</th>
+              <th>Rimanenti</th>
               <th style="text-align:right;"></th>
             </tr>
           </thead>
@@ -1952,170 +1700,12 @@ async function renderPackagesView(container) {
   `;
 
   document.getElementById("globalNewPkgBtn")?.addEventListener("click", () => showNewPackageModal());
+  bindPackageActions(container);
   bindCommonActionButtons(container);
 }
 
 // ============================================================================
-// 4. AGENDA (SECONDARIA, PULITA)
-// ============================================================================
-
-function renderApptStatusBadge(status) {
-  const map = {
-    prenotato: { cls: "tag", label: "Prenotato" },
-    confermato: { cls: "tag tag-accent", label: "Confermato" },
-    svolto: { cls: "tag tag-success", label: "Svolto" },
-    annullato: { cls: "tag tag-warning", label: "Annullato" },
-    assente: { cls: "tag tag-danger", label: "Assente" }
-  };
-  const info = map[status] || { cls: "tag", label: status };
-  return `<span class="${info.cls}">${esc(info.label)}</span>`;
-}
-
-async function renderAgendaView(container) {
-  const baseDate = new Date(`${state.agendaDate}T12:00:00`);
-  let fromDate = state.agendaDate;
-  let toDate = state.agendaDate;
-
-  if (state.agendaViewMode === "week") {
-    const dayOfWeek = (baseDate.getDay() + 6) % 7;
-    const mon = new Date(baseDate);
-    mon.setDate(baseDate.getDate() - dayOfWeek);
-    const sun = new Date(mon);
-    sun.setDate(mon.getDate() + 6);
-    fromDate = mon.toISOString().slice(0, 10);
-    toDate = sun.toISOString().slice(0, 10);
-  } else if (state.agendaViewMode === "month") {
-    fromDate = `${state.agendaDate.slice(0, 7)}-01`;
-    toDate = `${state.agendaDate.slice(0, 7)}-31`;
-  }
-
-  const data = await apiFetch(
-    `/api/appointments?from=${encodeURIComponent(fromDate)}&to=${encodeURIComponent(toDate)}&area=${encodeURIComponent(state.agendaAreaFilter)}`
-  );
-  const appts = data.appointments || [];
-  const byDay = {};
-  for (const a of appts) {
-    const dKey = a.start_at.slice(0, 10);
-    if (!byDay[dKey]) byDay[dKey] = [];
-    byDay[dKey].push(a);
-  }
-
-  let bodyHtml = "";
-  if (state.agendaViewMode === "week") {
-    const startMon = new Date(`${fromDate}T12:00:00`);
-    const cols = [];
-    for (let i = 0; i < 7; i++) {
-      const cur = new Date(startMon);
-      cur.setDate(startMon.getDate() + i);
-      const dStr = cur.toISOString().slice(0, 10);
-      const label = cur.toLocaleDateString("it-IT", { weekday: "short", day: "2-digit", month: "2-digit" });
-      const items = (byDay[dStr] || [])
-        .map(
-          (a) => `
-          <div class="agenda-item" data-open-appt-drawer="${a.id}">
-            <div class="num" style="font-size:11.5px; font-weight:600; color:var(--text-muted);">${formatRomeTime(a.start_at)} – ${formatRomeTime(a.end_at)}</div>
-            <div style="font-weight:600; font-size:13px;" class="sensitive-data">${esc(a.first_name)} ${esc(a.last_name)}</div>
-            <div style="font-size:11.5px; color:var(--text-muted);">${esc(a.service_name)}</div>
-            <div style="margin-top:4px;">${renderApptStatusBadge(a.status)}</div>
-          </div>`
-        )
-        .join("");
-      cols.push(`
-        <div class="agenda-day-col">
-          <div class="agenda-day-header ${dStr === state.agendaDate ? "is-today" : ""}">${esc(label)}</div>
-          ${items || `<div style="font-size:12px; color:var(--text-muted);">—</div>`}
-        </div>`);
-    }
-    bodyHtml = `<div class="agenda-week-grid">${cols.join("")}</div>`;
-  } else {
-    const days = Object.keys(byDay).sort();
-    bodyHtml = days.length
-      ? days
-          .map(
-            (dKey) => `
-            <div class="card">
-              <div class="card-header"><h3 class="card-title num">${formatDateIt(dKey)}</h3></div>
-              ${byDay[dKey]
-                .map(
-                  (a) => `
-                  <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--border); flex-wrap:wrap;">
-                    <div>
-                      <div style="display:flex; align-items:center; gap:8px;">
-                        <strong class="num">${formatRomeTime(a.start_at)} – ${formatRomeTime(a.end_at)}</strong>
-                        <span class="tag ${a.service_area === "fisio" ? "tag-accent" : ""}">${a.service_area === "fisio" ? "Fisio" : "PT"}</span>
-                        ${renderApptStatusBadge(a.status)}
-                      </div>
-                      <div style="font-weight:600; margin-top:2px;" class="sensitive-data">${esc(a.first_name)} ${esc(a.last_name)} · <span style="font-weight:400; color:var(--text-secondary);">${esc(a.service_name)}</span></div>
-                    </div>
-                    <div style="display:flex; gap:6px;">
-                      <button class="btn btn-sm btn-secondary" data-open-appt-drawer="${a.id}">Gestisci</button>
-                      <button class="btn btn-sm btn-ghost" data-open-person="${a.person_id}">Scheda</button>
-                    </div>
-                  </div>`
-                )
-                .join("")}
-            </div>`
-          )
-          .join("")
-      : `<div class="card"><div class="empty-state">Nessun appuntamento nel periodo selezionato.</div></div>`;
-  }
-
-  container.innerHTML = `
-    <div class="page-header">
-      <h1 class="page-title">Agenda</h1>
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <a class="btn btn-sm btn-secondary" href="${esc(buildAuthUrl("/api/appointments/export.ics?privacy=initials_only"))}" target="_blank">${ico("download")} Esporta .ics</a>
-        <button class="btn btn-primary" id="agendaNewApptBtn">${ico("plus")} <span>Nuovo appuntamento</span></button>
-      </div>
-    </div>
-
-    <div class="card" style="padding:12px 14px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-        <div class="segmented">
-          <button class="seg-btn ${state.agendaViewMode === "week" ? "active" : ""}" data-agenda-mode="week">Settimana</button>
-          <button class="seg-btn ${state.agendaViewMode === "day" ? "active" : ""}" data-agenda-mode="day">Giorno</button>
-          <button class="seg-btn ${state.agendaViewMode === "month" ? "active" : ""}" data-agenda-mode="month">Mese</button>
-          <button class="seg-btn ${state.agendaViewMode === "iphone_list" ? "active" : ""}" data-agenda-mode="iphone_list">Lista</button>
-        </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <input type="date" class="form-control form-control-sm" id="agendaDatePicker" value="${esc(state.agendaDate)}" style="width:auto;" />
-          <button class="btn btn-sm btn-secondary" id="agendaTodayBtn">Oggi</button>
-          <select class="form-control form-control-sm" id="agendaAreaSelect" style="width:auto;">
-            <option value="tutti" ${state.agendaAreaFilter === "tutti" ? "selected" : ""}>Tutte</option>
-            <option value="fisio" ${state.agendaAreaFilter === "fisio" ? "selected" : ""}>Fisio</option>
-            <option value="fitness" ${state.agendaAreaFilter === "fitness" ? "selected" : ""}>PT</option>
-          </select>
-        </div>
-      </div>
-    </div>
-
-    ${bodyHtml}
-  `;
-
-  container.querySelectorAll("[data-agenda-mode]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      state.agendaViewMode = btn.getAttribute("data-agenda-mode");
-      await renderAgendaView(container);
-    });
-  });
-  document.getElementById("agendaDatePicker")?.addEventListener("change", async (e) => {
-    state.agendaDate = e.target.value;
-    await renderAgendaView(container);
-  });
-  document.getElementById("agendaTodayBtn")?.addEventListener("click", async () => {
-    state.agendaDate = todayRomeStr();
-    await renderAgendaView(container);
-  });
-  document.getElementById("agendaAreaSelect")?.addEventListener("change", async (e) => {
-    state.agendaAreaFilter = e.target.value;
-    await renderAgendaView(container);
-  });
-  document.getElementById("agendaNewApptBtn")?.addEventListener("click", () => showNewAppointmentModal());
-  bindCommonActionButtons(container);
-}
-
-// ============================================================================
-// 5. IMPOSTAZIONI (ACCOUNT, 2FA, BACKUP — ESSENZIALE)
+// 4. IMPOSTAZIONI (ACCOUNT, 2FA, BACKUP)
 // ============================================================================
 
 async function renderSecurityView(container) {
@@ -2144,28 +1734,13 @@ async function renderSecurityView(container) {
       </div>
       <form id="updateCredentialsForm">
         <div class="grid-3">
-          <div class="form-group">
-            <label class="form-label">Nome utente</label>
-            <input class="form-control" id="credUsernameInput" value="${esc(sec.username || state.user?.username || "")}" required minlength="3" />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Nome visualizzato</label>
-            <input class="form-control" id="credDisplayNameInput" value="${esc(sec.display_name || state.user?.display_name || "")}" />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Password attuale *</label>
-            <input type="password" class="form-control" id="credCurrentPasswordInput" required autocomplete="current-password" />
-          </div>
+          <div class="form-group"><label class="form-label">Nome utente</label><input class="form-control" id="credUsernameInput" value="${esc(sec.username || state.user?.username || "")}" required minlength="3" /></div>
+          <div class="form-group"><label class="form-label">Nome visualizzato</label><input class="form-control" id="credDisplayNameInput" value="${esc(sec.display_name || state.user?.display_name || "")}" /></div>
+          <div class="form-group"><label class="form-label">Password attuale *</label><input type="password" class="form-control" id="credCurrentPasswordInput" required autocomplete="current-password" /></div>
         </div>
         <div class="grid-2">
-          <div class="form-group">
-            <label class="form-label">Nuova password (opzionale, min. 10 caratteri)</label>
-            <input type="password" class="form-control" id="credNewPasswordInput" autocomplete="new-password" />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Conferma nuova password</label>
-            <input type="password" class="form-control" id="credConfirmPasswordInput" autocomplete="new-password" />
-          </div>
+          <div class="form-group"><label class="form-label">Nuova password (opzionale, min. 10 caratteri)</label><input type="password" class="form-control" id="credNewPasswordInput" autocomplete="new-password" /></div>
+          <div class="form-group"><label class="form-label">Conferma nuova password</label><input type="password" class="form-control" id="credConfirmPasswordInput" autocomplete="new-password" /></div>
         </div>
         <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
           <div id="credentialsResultBox" style="font-size:13px;"></div>
@@ -2181,13 +1756,10 @@ async function renderSecurityView(container) {
           <span class="tag ${sec.totp_enabled ? "tag-success" : ""}">${sec.totp_enabled ? "Attiva" : "Disattiva"}</span>
         </div>
         <div style="background:var(--bg-hover); border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px; font-family:monospace; font-size:12.5px; margin-bottom:12px;">
-          <div>Segreto: <strong>${esc(sec.totp_secret)}</strong></div>
+          Segreto: <strong>${esc(sec.totp_secret)}</strong>
         </div>
         <form id="toggleTotpForm" style="display:flex; gap:8px; align-items:flex-end;">
-          <div class="form-group" style="margin:0; flex:1;">
-            <label class="form-label">Codice TOTP (6 cifre)</label>
-            <input class="form-control" id="totpVerifyInput" value="${esc(sec.current_totp_demo_hint || "")}" placeholder="123456" />
-          </div>
+          <div class="form-group" style="margin:0; flex:1;"><label class="form-label">Codice TOTP (6 cifre)</label><input class="form-control" id="totpVerifyInput" value="${esc(sec.current_totp_demo_hint || "")}" placeholder="123456" /></div>
           <button type="submit" class="btn ${sec.totp_enabled ? "btn-danger" : "btn-primary"}">${sec.totp_enabled ? "Disattiva" : "Attiva 2FA"}</button>
         </form>
         <div id="recoveryCodesBox" style="margin-top:10px;"></div>
@@ -2455,7 +2027,7 @@ function showImportTallyCsvModal(episodeId) {
 
 function showRecordOutcomeModal(episodeId, evaluationId = null) {
   const todayStr = todayRomeStr();
-  let multiItemMode = "quick"; // 'quick' | 'items'
+  let multiItemMode = "quick";
 
   openModal(
     `
@@ -2513,14 +2085,8 @@ function showRecordOutcomeModal(episodeId, evaluationId = null) {
       </div>
 
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Contesto</label>
-          <input class="form-control" name="context_label" value="Valutazione in seduta" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Note</label>
-          <input class="form-control" name="clinical_note" id="outcomeClinicalNoteInput" />
-        </div>
+        <div class="form-group"><label class="form-label">Contesto</label><input class="form-control" name="context_label" value="Valutazione in seduta" /></div>
+        <div class="form-group"><label class="form-label">Note</label><input class="form-control" name="clinical_note" id="outcomeClinicalNoteInput" /></div>
       </div>
 
       <div class="modal-footer">
@@ -2667,9 +2233,7 @@ function showRecordOutcomeModal(episodeId, evaluationId = null) {
         return;
       }
       scoreVal = valid.reduce((a, r) => a + r.score, 0);
-      if (!clinicalNote) {
-        clinicalNote = buildClinicalNoteFromBreakdown(scaleCode, responses, scoreVal);
-      }
+      if (!clinicalNote) clinicalNote = buildClinicalNoteFromBreakdown(scaleCode, responses, scoreVal);
     }
 
     try {
@@ -2695,7 +2259,7 @@ function showRecordOutcomeModal(episodeId, evaluationId = null) {
 }
 
 // ============================================================================
-// ALTRI MODALI OPERATIVI (PULITI, ZERO TESTO SUPERFLUO)
+// ALTRI MODALI OPERATIVI
 // ============================================================================
 
 function bindCommonActionButtons(root) {
@@ -2706,24 +2270,6 @@ function bindCommonActionButtons(root) {
         personId: Number(el.getAttribute("data-open-person")),
         personTab: el.getAttribute("data-person-tab") || "profilo"
       });
-    });
-  });
-
-  root.querySelectorAll("[data-open-appt-drawer]").forEach((el) => {
-    el.addEventListener("click", async (e) => {
-      e.preventDefault();
-      await showAppointmentSessionDrawer(Number(el.getAttribute("data-open-appt-drawer")));
-    });
-  });
-
-  root.querySelectorAll("[data-record-payment-pkg]").forEach((el) => {
-    el.addEventListener("click", (e) => {
-      e.preventDefault();
-      showRecordPaymentModal(
-        Number(el.getAttribute("data-person-id")),
-        Number(el.getAttribute("data-record-payment-pkg")),
-        Number(el.getAttribute("data-due-cents") || 0)
-      );
     });
   });
 }
@@ -2742,8 +2288,8 @@ function showNewPersonModal() {
         <div class="form-group"><label class="form-label">Email</label><input class="form-control" type="email" name="email" /></div>
       </div>
       <div class="grid-2">
-        <div class="form-group"><label class="form-label">Sport / Attività</label><input class="form-control" name="sport_activity" /></div>
-        <div class="form-group"><label class="form-label">Obiettivo</label><input class="form-control" name="goals" /></div>
+        <div class="form-group"><label class="form-label">Problematiche / Dolori attuali</label><input class="form-control" name="current_pain_notes" /></div>
+        <div class="form-group"><label class="form-label">Sport / Obiettivo</label><input class="form-control" name="goals" /></div>
       </div>
       <div class="form-group">
         <label class="form-label">Percorso</label>
@@ -2774,7 +2320,7 @@ function showNewPersonModal() {
           birth_date: fd.get("birth_date"),
           phone: fd.get("phone"),
           email: fd.get("email"),
-          sport_activity: fd.get("sport_activity"),
+          current_pain_notes: fd.get("current_pain_notes"),
           goals: fd.get("goals"),
           physio_active: fd.get("physio_active") === "on",
           fitness_active: fd.get("fitness_active") === "on",
@@ -2799,224 +2345,13 @@ function showNewPersonModal() {
   });
 }
 
-async function showAppointmentSessionDrawer(appointmentId) {
-  const allAppts = await apiFetch("/api/appointments");
-  const appt = (allAppts.appointments || []).find((a) => a.id === appointmentId);
-  if (!appt) return;
-
-  const dossier = await apiFetch(`/api/people/${appt.person_id}`);
-  const pkg = dossier.packages.find((k) => k.id === appt.package_id);
-  const idemKey = `ui_svolto_appt_${appt.id}_v${appt.version}`;
-
-  openModal(`
-    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:14px;">
-      <div>
-        <span class="tag ${appt.service_area === "fisio" ? "tag-accent" : ""}">${appt.service_area === "fisio" ? "Fisio" : "PT"}</span>
-        <h2 class="modal-title" style="margin:6px 0 2px;">${esc(appt.first_name)} ${esc(appt.last_name)}</h2>
-        <div class="num" style="font-size:13px; color:var(--text-muted);">${formatRomeDateTime(appt.start_at)} (${appt.duration_minutes} min) · ${esc(appt.location)}</div>
-      </div>
-      <button class="btn btn-sm btn-secondary" id="drawerOpenFullPersonBtn">Apri scheda</button>
-    </div>
-
-    ${
-      pkg
-        ? `<div style="background:var(--bg-hover); border:1px solid var(--border); padding:10px 12px; border-radius:6px; margin-bottom:14px; font-size:13px;">
-            <strong>${esc(pkg.name)}</strong> · Residue: <strong class="num">${pkg.remaining_sessions}/${pkg.total_sessions}</strong>
-            ${pkg.due_cents > 0 ? ` · <span style="color:var(--danger); font-weight:600;">Da incassare: ${formatEur(pkg.due_cents)}</span>` : " · Saldato"}
-          </div>`
-        : ""
-    }
-
-    <div class="form-group">
-      <label class="form-label">Stato appuntamento</label>
-      <div style="display:flex; gap:6px; flex-wrap:wrap;">
-        <button class="btn btn-sm ${appt.status === "svolto" ? "btn-primary" : "btn-secondary"}" data-set-appt-status="svolto">Svolto</button>
-        <button class="btn btn-sm ${appt.status === "confermato" ? "btn-primary" : "btn-secondary"}" data-set-appt-status="confermato">Confermato</button>
-        <button class="btn btn-sm ${appt.status === "prenotato" ? "btn-primary" : "btn-secondary"}" data-set-appt-status="prenotato">Prenotato</button>
-        <button class="btn btn-sm ${appt.status === "annullato" ? "btn-danger" : "btn-secondary"}" data-set-appt-status="annullato" data-charge="no_charge">Annullato</button>
-        <button class="btn btn-sm btn-secondary" data-set-appt-status="annullato" data-charge="charge">Disdetta tardiva</button>
-        <button class="btn btn-sm ${appt.status === "assente" ? "btn-danger" : "btn-secondary"}" data-set-appt-status="assente" data-charge="charge">Assente</button>
-      </div>
-    </div>
-
-    <form id="rescheduleApptForm" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
-      <div class="form-group" style="margin:0; flex:1; min-width:180px;">
-        <label class="form-label">Sposta data/ora</label>
-        <input class="form-control" type="datetime-local" name="start_at" value="${esc(appt.start_at.slice(0, 16))}" required />
-      </div>
-      <div class="form-group" style="margin:0; width:96px;">
-        <label class="form-label">Minuti</label>
-        <input class="form-control" type="number" name="duration_minutes" value="${appt.duration_minutes}" required />
-      </div>
-      <button type="submit" class="btn btn-secondary">Sposta</button>
-    </form>
-
-    <div class="modal-footer" style="justify-content:space-between;">
-      <div style="display:flex; gap:6px; flex-wrap:wrap;">
-        ${appt.service_area === "fisio" && dossier.physio.episodes.length ? `<button class="btn btn-sm btn-secondary" id="drawerWriteSoapBtn">Nota SOAP</button>` : ""}
-        ${appt.service_area === "fitness" ? `<button class="btn btn-sm btn-secondary" id="drawerLogWorkoutBtn">Registra seduta</button>` : ""}
-        ${pkg && pkg.due_cents > 0 ? `<button class="btn btn-sm btn-primary" id="drawerCollectPayBtn">Incassa ${formatEur(pkg.due_cents)}</button>` : ""}
-      </div>
-      <button class="btn btn-sm btn-ghost" id="closeDrawerBtn">Chiudi</button>
-    </div>
-  `);
-
-  document.getElementById("closeDrawerBtn")?.addEventListener("click", closeModal);
-  document.getElementById("drawerOpenFullPersonBtn")?.addEventListener("click", async () => {
-    closeModal();
-    await navigateTo("people", { personId: appt.person_id, personTab: appt.service_area });
-  });
-  document.querySelectorAll("[data-set-appt-status]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      const newStatus = btn.getAttribute("data-set-appt-status");
-      await apiFetch(`/api/appointments/${appt.id}`, {
-        method: "PUT",
-        body: {
-          status: newStatus,
-          charge_override: btn.getAttribute("data-charge") || null,
-          idempotency_key: newStatus === "svolto" ? idemKey : undefined,
-          expected_version: appt.version
-        }
-      });
-      closeModal();
-      await refreshCurrentView();
-    });
-  });
-  document.getElementById("rescheduleApptForm")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    await apiFetch(`/api/appointments/${appt.id}`, {
-      method: "PUT",
-      body: { start_at: fd.get("start_at"), duration_minutes: Number(fd.get("duration_minutes")), expected_version: appt.version }
-    });
-    closeModal();
-    await refreshCurrentView();
-  });
-  document.getElementById("drawerWriteSoapBtn")?.addEventListener("click", () => {
-    closeModal();
-    showSoapNoteModal(dossier.physio.episodes[0], null, null, appt.id);
-  });
-  document.getElementById("drawerLogWorkoutBtn")?.addEventListener("click", () => {
-    closeModal();
-    showWorkoutLogModal(appt.person_id, dossier.fitness.programs[0] || null, 0, appt.id);
-  });
-  document.getElementById("drawerCollectPayBtn")?.addEventListener("click", () => {
-    closeModal();
-    showRecordPaymentModal(appt.person_id, pkg.id, pkg.due_cents);
-  });
-}
-
-async function showNewAppointmentModal(preselectedPersonId = null) {
-  const pData = await apiFetch("/api/people?status=attivo");
-  const people = pData.people || [];
-  const selectedPid = preselectedPersonId || state.selectedPersonId || people[0]?.id;
-
-  let packages = [];
-  if (selectedPid) {
-    const pkgData = await apiFetch(`/api/packages?person_id=${selectedPid}`);
-    packages = (pkgData.packages || []).filter((k) => k.status === "attivo");
-  }
-
-  openModal(`
-    <h2 class="modal-title">Nuovo appuntamento</h2>
-    <form id="newApptModalForm">
-      <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Persona *</label>
-          <select class="form-control" name="person_id" id="apptPersonSelect" required>
-            ${people.map((p) => `<option value="${p.id}" ${p.id === selectedPid ? "selected" : ""}>${esc(p.last_name)} ${esc(p.first_name)}</option>`).join("")}
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Area *</label>
-          <select class="form-control" name="service_area">
-            <option value="fisio">Fisioterapia</option>
-            <option value="fitness">Personal Training</option>
-          </select>
-        </div>
-      </div>
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Servizio</label><input class="form-control" name="service_name" value="Seduta Fisioterapia" required /></div>
-        <div class="form-group">
-          <label class="form-label">Pacchetto</label>
-          <select class="form-control" name="package_id" id="apptPkgSelect">
-            <option value="">Fuori pacchetto</option>
-            ${packages.map((k) => `<option value="${k.id}" selected>${esc(k.name)} (${k.available_to_book} disp.)</option>`).join("")}
-          </select>
-        </div>
-      </div>
-      <div class="grid-3">
-        <div class="form-group"><label class="form-label">Data e ora *</label><input class="form-control" type="datetime-local" name="start_at" value="${state.agendaDate}T10:00" required /></div>
-        <div class="form-group"><label class="form-label">Durata (min)</label><input class="form-control" type="number" name="duration_minutes" value="60" min="15" step="5" required /></div>
-        <div class="form-group"><label class="form-label">Ricorrenze</label><input class="form-control" type="number" name="recurrence_count" value="1" min="1" max="24" /></div>
-      </div>
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Luogo</label><input class="form-control" name="location" value="Studio" /></div>
-        <div class="form-group">
-          <label class="form-label">Stato</label>
-          <select class="form-control" name="status">
-            <option value="prenotato">Prenotato</option>
-            <option value="confermato">Confermato</option>
-            <option value="svolto">Già svolto</option>
-          </select>
-        </div>
-      </div>
-      <div class="form-group"><label class="form-label">Note</label><input class="form-control" name="notes" /></div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" id="cancelApptModalBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Salva</button>
-      </div>
-    </form>
-  `);
-
-  document.getElementById("cancelApptModalBtn")?.addEventListener("click", closeModal);
-  document.getElementById("apptPersonSelect")?.addEventListener("change", async (e) => {
-    const pkgData = await apiFetch(`/api/packages?person_id=${Number(e.target.value)}`);
-    const activePkgs = (pkgData.packages || []).filter((k) => k.status === "attivo");
-    document.getElementById("apptPkgSelect").innerHTML =
-      `<option value="">Fuori pacchetto</option>` +
-      activePkgs.map((k) => `<option value="${k.id}" selected>${esc(k.name)} (${k.available_to_book} disp.)</option>`).join("");
-  });
-  document.getElementById("newApptModalForm")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const pkgVal = fd.get("package_id");
-    try {
-      const res = await apiFetch("/api/appointments", {
-        method: "POST",
-        body: {
-          person_id: Number(fd.get("person_id")),
-          service_area: fd.get("service_area"),
-          service_name: fd.get("service_name"),
-          package_id: pkgVal ? Number(pkgVal) : null,
-          out_of_package: !pkgVal,
-          start_at: fd.get("start_at"),
-          duration_minutes: Number(fd.get("duration_minutes")),
-          buffer_minutes: 10,
-          location: fd.get("location"),
-          status: fd.get("status"),
-          recurrence_count: Number(fd.get("recurrence_count") || 1),
-          recurrence_interval_days: 7,
-          notes: fd.get("notes")
-        }
-      });
-      closeModal();
-      if (res.conflicts?.length) alert(res.conflicts.map((c) => c.message).join("\n"));
-      await refreshCurrentView();
-    } catch (err) {
-      alert(err.message);
-    }
-  });
-}
-
 async function showNewPackageModal(preselectedPersonId = null) {
   const pData = await apiFetch("/api/people?status=attivo");
   const people = pData.people || [];
   const selectedPid = preselectedPersonId || state.selectedPersonId || people[0]?.id;
 
   openModal(`
-    <h2 class="modal-title">Nuovo pacchetto</h2>
+    <h2 class="modal-title">Nuovo pacchetto sedute</h2>
     <form id="newPkgModalForm">
       <div class="grid-2">
         <div class="form-group">
@@ -3026,7 +2361,7 @@ async function showNewPackageModal(preselectedPersonId = null) {
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Area</label>
+          <label class="form-label">Tipo</label>
           <select class="form-control" name="service_area">
             <option value="fisio">Fisioterapia</option>
             <option value="fitness">Personal Training</option>
@@ -3034,41 +2369,15 @@ async function showNewPackageModal(preselectedPersonId = null) {
           </select>
         </div>
       </div>
-      <div class="grid-3">
-        <div class="form-group"><label class="form-label">Nome *</label><input class="form-control" name="name" value="Pacchetto 10 sedute" required /></div>
-        <div class="form-group"><label class="form-label">Sedute *</label><input class="form-control" type="number" name="total_sessions" value="10" min="1" required /></div>
-        <div class="form-group"><label class="form-label">Prezzo (€) *</label><input class="form-control" type="number" step="0.01" name="price_eur" value="500.00" min="0" required /></div>
+      <div class="grid-2">
+        <div class="form-group"><label class="form-label">Nome pacchetto *</label><input class="form-control" name="name" value="Pacchetto 10 sedute" required /></div>
+        <div class="form-group"><label class="form-label">Numero sedute *</label><input class="form-control" type="number" name="total_sessions" value="10" min="1" required /></div>
       </div>
-      <div class="grid-3">
-        <div class="form-group"><label class="form-label">Data acquisto</label><input class="form-control" type="date" name="purchased_date" value="${todayRomeStr()}" required /></div>
-        <div class="form-group"><label class="form-label">Scadenza</label><input class="form-control" type="date" name="valid_until" /></div>
-        <div class="form-group"><label class="form-label">Acconto (€)</label><input class="form-control" type="number" step="0.01" name="initial_payment_eur" value="0.00" min="0" /></div>
+      <div class="grid-2">
+        <div class="form-group"><label class="form-label">Data inizio</label><input class="form-control" type="date" name="purchased_date" value="${todayRomeStr()}" required /></div>
+        <div class="form-group"><label class="form-label">Scadenza (opzionale)</label><input class="form-control" type="date" name="valid_until" /></div>
       </div>
-      <div class="grid-3">
-        <div class="form-group">
-          <label class="form-label">Metodo</label>
-          <select class="form-control" name="payment_method">
-            <option value="POS/Carta">POS / Carta</option>
-            <option value="Bonifico">Bonifico</option>
-            <option value="Contanti">Contanti</option>
-            <option value="Satispay/Altro">Altro</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Disdetta tardiva</label>
-          <select class="form-control" name="late_cancel_policy">
-            <option value="charge">Addebita</option>
-            <option value="no_charge">Non addebitare</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Assenza</label>
-          <select class="form-control" name="no_show_policy">
-            <option value="charge">Addebita</option>
-            <option value="no_charge">Non addebitare</option>
-          </select>
-        </div>
-      </div>
+      <div class="form-group"><label class="form-label">Note (opzionale)</label><input class="form-control" name="notes" /></div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelPkgModalBtn">Annulla</button>
         <button type="submit" class="btn btn-primary">Crea pacchetto</button>
@@ -3086,59 +2395,10 @@ async function showNewPackageModal(preselectedPersonId = null) {
         service_area: fd.get("service_area"),
         name: fd.get("name"),
         total_sessions: Number(fd.get("total_sessions")),
-        price_eur: Number(fd.get("price_eur")),
+        price_eur: 0,
         purchased_date: fd.get("purchased_date"),
         valid_until: fd.get("valid_until"),
-        initial_payment_eur: Number(fd.get("initial_payment_eur") || 0),
-        payment_method: fd.get("payment_method"),
-        late_cancel_policy: fd.get("late_cancel_policy"),
-        no_show_policy: fd.get("no_show_policy")
-      }
-    });
-    closeModal();
-    await refreshCurrentView();
-  });
-}
-
-function showRecordPaymentModal(personId, packageId, dueCents = 0) {
-  openModal(`
-    <h2 class="modal-title">Registra pagamento</h2>
-    <form id="recordPayForm">
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Importo (€) *</label><input class="form-control" type="number" step="0.01" name="amount_eur" value="${(dueCents / 100).toFixed(2)}" min="0.01" required /></div>
-        <div class="form-group">
-          <label class="form-label">Metodo *</label>
-          <select class="form-control" name="payment_method">
-            <option value="POS/Carta">POS / Carta</option>
-            <option value="Bonifico">Bonifico</option>
-            <option value="Contanti">Contanti</option>
-            <option value="Satispay/Altro">Altro</option>
-          </select>
-        </div>
-      </div>
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Data</label><input class="form-control" type="date" name="payment_date" value="${todayRomeStr()}" required /></div>
-        <div class="form-group"><label class="form-label">Note</label><input class="form-control" name="reference_note" /></div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" id="cancelPayBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Salva pagamento</button>
-      </div>
-    </form>
-  `);
-  document.getElementById("cancelPayBtn")?.addEventListener("click", closeModal);
-  document.getElementById("recordPayForm")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    await apiFetch("/api/payments", {
-      method: "POST",
-      body: {
-        person_id: personId,
-        package_id: packageId,
-        amount_eur: Number(fd.get("amount_eur")),
-        payment_method: fd.get("payment_method"),
-        payment_date: fd.get("payment_date"),
-        reference_note: fd.get("reference_note")
+        notes: fd.get("notes")
       }
     });
     closeModal();
@@ -3148,7 +2408,7 @@ function showRecordPaymentModal(personId, packageId, dueCents = 0) {
 
 function showNewPhysioEpisodeModal(personId) {
   openModal(`
-    <h2 class="modal-title">Nuovo episodio fisioterapico</h2>
+    <h2 class="modal-title">Nuovo episodio clinico</h2>
     <form id="newEpisodeForm">
       <div class="grid-2">
         <div class="form-group"><label class="form-label">Titolo *</label><input class="form-control" name="title" placeholder="Es. Spalla destra / Lombalgia" required /></div>
@@ -3165,13 +2425,13 @@ function showNewPhysioEpisodeModal(personId) {
           </div>
         </div>
       </div>
-      <div class="form-group"><label class="form-label">Motivo principale *</label><input class="form-control" name="chief_complaint" required /></div>
+      <div class="form-group"><label class="form-label">Problematica / Motivo *</label><input class="form-control" name="chief_complaint" required /></div>
       <div class="grid-2">
         <div class="form-group"><label class="form-label">Data inizio</label><input class="form-control" type="date" name="start_date" value="${todayRomeStr()}" required /></div>
         <div class="form-group"><label class="form-label">Rivalutazione prevista</label><input class="form-control" type="date" name="reassessment_due_date" /></div>
       </div>
       <div class="grid-2">
-        <div class="form-group"><label class="form-label">Obiettivi paziente</label><textarea class="form-control" name="patient_goals" rows="2"></textarea></div>
+        <div class="form-group"><label class="form-label">Obiettivi persona</label><textarea class="form-control" name="patient_goals" rows="2"></textarea></div>
         <div class="form-group"><label class="form-label">Obiettivi clinici</label><textarea class="form-control" name="therapist_goals" rows="2"></textarea></div>
       </div>
       <div class="modal-footer">
@@ -3214,8 +2474,6 @@ function showEvaluationModal(episode, existingEval = null, defaultType = "prima_
     symptom_onset: "",
     aggravating_factors: "",
     easing_factors: "",
-    medical_history: "",
-    work_sport_load: "",
     special_tests: "",
     clinical_reasoning: "",
     home_advice: "",
@@ -3268,10 +2526,7 @@ function showEvaluationModal(episode, existingEval = null, defaultType = "prima_
               <div class="grid-2">
                 <div class="form-group">
                   <label class="form-label">Tipo segno</label>
-                  <select class="form-control form-control-sm" id="bmKindSelect">
-                    <option value="point">Punto</option>
-                    <option value="area">Area</option>
-                  </select>
+                  <select class="form-control form-control-sm" id="bmKindSelect"><option value="point">Punto</option><option value="area">Area</option></select>
                 </div>
                 <div class="form-group"><label class="form-label">Intensità (0–10)</label><input class="form-control form-control-sm" type="number" id="bmIntensityInput" value="6" min="0" max="10" /></div>
               </div>
@@ -3292,7 +2547,7 @@ function showEvaluationModal(episode, existingEval = null, defaultType = "prima_
 
       <div class="grid-2">
         <div class="form-group"><label class="form-label">Motivo</label><textarea class="form-control" name="consult_reason" rows="2">${esc(ev.consult_reason || "")}</textarea></div>
-        <div class="form-group"><label class="form-label">Obiettivi paziente</label><textarea class="form-control" name="patient_goals" rows="2">${esc(ev.patient_goals || "")}</textarea></div>
+        <div class="form-group"><label class="form-label">Obiettivi</label><textarea class="form-control" name="patient_goals" rows="2">${esc(ev.patient_goals || "")}</textarea></div>
       </div>
       <div class="grid-3">
         <div class="form-group"><label class="form-label">Esordio e andamento</label><textarea class="form-control" name="symptom_onset" rows="2">${esc(ev.symptom_onset || "")}</textarea></div>
@@ -3476,18 +2731,11 @@ function showCustomFlagModal(episodeId) {
       <div class="grid-2">
         <div class="form-group">
           <label class="form-label">Tipo</label>
-          <select class="form-control" name="flag_type">
-            <option value="yellow">Yellow Flag</option>
-            <option value="red">Red Flag</option>
-          </select>
+          <select class="form-control" name="flag_type"><option value="yellow">Yellow Flag</option><option value="red">Red Flag</option></select>
         </div>
         <div class="form-group">
           <label class="form-label">Stato</label>
-          <select class="form-control" name="status">
-            <option value="presente">Presente</option>
-            <option value="assente">Assente</option>
-            <option value="non_valutato">Non valutato</option>
-          </select>
+          <select class="form-control" name="status"><option value="presente">Presente</option><option value="assente">Assente</option><option value="non_valutato">Non valutato</option></select>
         </div>
       </div>
       <div class="form-group"><label class="form-label">Descrizione *</label><input class="form-control" name="item_label" required /></div>
@@ -3519,7 +2767,7 @@ function showCustomFlagModal(episodeId) {
   });
 }
 
-function showSoapNoteModal(episode, existingNote = null, copiedFromNote = null, appointmentId = null) {
+function showSoapNoteModal(episode, existingNote = null, copiedFromNote = null) {
   const base = existingNote || copiedFromNote || {};
   openModal(`
     <h2 class="modal-title">${existingNote ? "Modifica nota di seduta" : "Nuova nota di seduta"}</h2>
@@ -3559,7 +2807,6 @@ function showSoapNoteModal(episode, existingNote = null, copiedFromNote = null, 
       method: existingNote ? "PUT" : "POST",
       body: {
         episode_id: episode.id,
-        appointment_id: appointmentId,
         expected_version: existingNote ? existingNote.version : undefined,
         copied_from_note_id: copiedFromNote ? copiedFromNote.id : undefined,
         copied_from_date: copiedFromNote ? copiedFromNote.note_date : undefined,
@@ -3641,7 +2888,7 @@ function showCloseEpisodeModal(episode) {
 
 function showAddSharedLimitationModal(personId, episodes = [], defaultEpId = null) {
   openModal(`
-    <h2 class="modal-title">Nuova limitazione condivisa</h2>
+    <h2 class="modal-title">Nuova limitazione / attenzione</h2>
     <form id="sharedLimForm">
       <div class="grid-2">
         <div class="form-group"><label class="form-label">Titolo *</label><input class="form-control" name="title" placeholder="Es. Evitare overhead pesante spalla DX" required /></div>
@@ -3658,9 +2905,9 @@ function showAddSharedLimitationModal(personId, episodes = [], defaultEpId = nul
           </div>
         </div>
       </div>
-      <div class="form-group"><label class="form-label">Indicazione operativa *</label><textarea class="form-control" name="description" rows="2" required></textarea></div>
+      <div class="form-group"><label class="form-label">Dettaglio *</label><textarea class="form-control" name="description" rows="2" required></textarea></div>
       <div class="grid-2">
-        <div class="form-group"><label class="form-label">Fonte</label><input class="form-control" name="source_type" value="Valutazione Fisio" required /></div>
+        <div class="form-group"><label class="form-label">Fonte</label><input class="form-control" name="source_type" value="Valutazione clinica" required /></div>
         <div class="form-group"><label class="form-label">Data</label><input class="form-control" type="date" name="recorded_date" value="${todayRomeStr()}" required /></div>
       </div>
       <div class="modal-footer">
@@ -3691,243 +2938,6 @@ function showAddSharedLimitationModal(personId, episodes = [], defaultEpId = nul
   });
 }
 
-function showEditFitnessProfileModal(personId, prof = {}) {
-  openModal(`
-    <h2 class="modal-title">Modifica profilo PT</h2>
-    <form id="fitProfForm">
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Obiettivi</label><input class="form-control" name="primary_goals" value="${esc(prof.primary_goals || "")}" /></div>
-        <div class="form-group">
-          <label class="form-label">Livello</label>
-          <select class="form-control" name="experience_level">
-            <option value="Principiante" ${prof.experience_level === "Principiante" ? "selected" : ""}>Principiante</option>
-            <option value="Intermedio" ${prof.experience_level === "Intermedio" ? "selected" : ""}>Intermedio</option>
-            <option value="Avanzato / Agonista" ${prof.experience_level === "Avanzato / Agonista" ? "selected" : ""}>Avanzato</option>
-          </select>
-        </div>
-      </div>
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Disponibilità</label><input class="form-control" name="weekly_availability" value="${esc(prof.weekly_availability || "")}" /></div>
-        <div class="form-group"><label class="form-label">Attrezzatura</label><input class="form-control" name="available_equipment" value="${esc(prof.available_equipment || "")}" /></div>
-      </div>
-      <div class="form-group"><label class="form-label">Note</label><textarea class="form-control" name="initial_assessment_notes" rows="2">${esc(prof.initial_assessment_notes || "")}</textarea></div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" id="cancelFitProfBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Salva</button>
-      </div>
-    </form>
-  `);
-  document.getElementById("cancelFitProfBtn")?.addEventListener("click", closeModal);
-  document.getElementById("fitProfForm")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    await apiFetch(`/api/people/${personId}/fitness-profile`, {
-      method: "PUT",
-      body: {
-        expected_version: prof.version,
-        primary_goals: fd.get("primary_goals"),
-        experience_level: fd.get("experience_level"),
-        weekly_availability: fd.get("weekly_availability"),
-        available_equipment: fd.get("available_equipment"),
-        initial_assessment_notes: fd.get("initial_assessment_notes")
-      }
-    });
-    closeModal();
-    await refreshCurrentView();
-  });
-}
-
-function showAddFitnessMetricModal(personId) {
-  openModal(`
-    <h2 class="modal-title">Nuovo test / misura</h2>
-    <form id="fitMetricForm">
-      <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Categoria</label>
-          <select class="form-control" name="metric_category">
-            <option value="Forza">Forza</option>
-            <option value="Antropometria">Antropometria</option>
-            <option value="Performance">Performance</option>
-          </select>
-        </div>
-        <div class="form-group"><label class="form-label">Data</label><input class="form-control" type="date" name="recorded_date" value="${todayRomeStr()}" required /></div>
-      </div>
-      <div class="grid-3">
-        <div class="form-group"><label class="form-label">Test *</label><input class="form-control" name="metric_name" placeholder="Es. Squat 5RM" required /></div>
-        <div class="form-group"><label class="form-label">Valore *</label><input class="form-control" type="number" step="0.1" name="value_num" required /></div>
-        <div class="form-group"><label class="form-label">Unità *</label><input class="form-control" name="unit" value="kg" required /></div>
-      </div>
-      <div class="form-group"><label class="form-label">Note</label><input class="form-control" name="protocol_notes" /></div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" id="cancelFitMetricBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Salva</button>
-      </div>
-    </form>
-  `);
-  document.getElementById("cancelFitMetricBtn")?.addEventListener("click", closeModal);
-  document.getElementById("fitMetricForm")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    await apiFetch("/api/fitness/metrics", {
-      method: "POST",
-      body: {
-        person_id: personId,
-        metric_category: fd.get("metric_category"),
-        recorded_date: fd.get("recorded_date"),
-        metric_name: fd.get("metric_name"),
-        value_num: Number(fd.get("value_num")),
-        unit: fd.get("unit"),
-        protocol_notes: fd.get("protocol_notes")
-      }
-    });
-    closeModal();
-    await refreshCurrentView();
-  });
-}
-
-function showFitnessProgramModal(personId, existingProg = null) {
-  const defaultWorkouts = existingProg?.workouts || [
-    {
-      day_name: "Scheda A",
-      exercises: [
-        { name: "Squat / Trap Bar", sets: 4, reps: "8", load: "60 kg", rest: "120s", rpe: "7.5", notes: "" },
-        { name: "Spinte manubri", sets: 3, reps: "10", load: "2x16 kg", rest: "90s", rpe: "8", notes: "" }
-      ]
-    }
-  ];
-  openModal(`
-    <h2 class="modal-title">${existingProg ? `Modifica programma (v${existingProg.version + 1})` : "Nuovo programma PT"}</h2>
-    <form id="fitProgForm">
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Titolo *</label><input class="form-control" name="title" value="${esc(existingProg?.title || "Programma Forza")}" required /></div>
-        <div class="form-group"><label class="form-label">Obiettivo *</label><input class="form-control" name="goal" value="${esc(existingProg?.goal || "")}" required /></div>
-      </div>
-      <div class="grid-3">
-        <div class="form-group"><label class="form-label">Data inizio</label><input class="form-control" type="date" name="start_date" value="${esc(existingProg?.start_date || todayRomeStr())}" required /></div>
-        <div class="form-group"><label class="form-label">Sedute/sett.</label><input class="form-control" type="number" name="frequency_per_week" value="${existingProg?.frequency_per_week || 2}" min="1" max="7" /></div>
-        <div class="form-group"><label class="form-label">Nota versione</label><input class="form-control" name="change_note" value="Aggiornamento" /></div>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Schede (JSON)</label>
-        <textarea class="form-control" name="workouts_json" style="font-family:monospace; min-height:170px;">${esc(JSON.stringify(defaultWorkouts, null, 2))}</textarea>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" id="cancelFitProgBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Salva</button>
-      </div>
-    </form>
-  `);
-  document.getElementById("cancelFitProgBtn")?.addEventListener("click", closeModal);
-  document.getElementById("fitProgForm")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    let workouts;
-    try {
-      workouts = JSON.parse(fd.get("workouts_json"));
-    } catch {
-      alert("JSON non valido.");
-      return;
-    }
-    await apiFetch(existingProg ? `/api/fitness/programs/${existingProg.id}` : "/api/fitness/programs", {
-      method: existingProg ? "PUT" : "POST",
-      body: {
-        person_id: personId,
-        expected_version: existingProg ? existingProg.version : undefined,
-        title: fd.get("title"),
-        goal: fd.get("goal"),
-        start_date: fd.get("start_date"),
-        frequency_per_week: Number(fd.get("frequency_per_week")),
-        change_note: fd.get("change_note"),
-        workouts
-      }
-    });
-    closeModal();
-    await refreshCurrentView();
-  });
-}
-
-function showWorkoutLogModal(personId, program = null, dayIdx = 0, appointmentId = null) {
-  const dayObj = program?.workouts?.[dayIdx] || {
-    day_name: "Seduta PT",
-    exercises: [{ name: "Esercizio 1", sets: 3, reps: "10", load: "", rpe: "" }]
-  };
-  const planned = dayObj.exercises || [];
-
-  openModal(
-    `
-    <h2 class="modal-title">Registra seduta PT</h2>
-    <form id="workoutLogForm">
-      <div class="grid-3">
-        <div class="form-group"><label class="form-label">Scheda</label><input class="form-control" name="workout_day_name" value="${esc(dayObj.day_name)}" required /></div>
-        <div class="form-group"><label class="form-label">Data</label><input class="form-control" type="date" name="session_date" value="${todayRomeStr()}" required /></div>
-        <div class="form-group"><label class="form-label">RPE (1–10)</label><input class="form-control" type="number" step="0.5" min="1" max="10" name="session_rpe" value="7.5" /></div>
-      </div>
-      <div class="table-wrap" style="margin-bottom:12px;">
-        <table class="data-table data-table-compact">
-          <thead><tr><th>Esercizio</th><th>Serie</th><th>Rip.</th><th>Carico</th><th>RPE</th></tr></thead>
-          <tbody>
-            ${planned
-              .map(
-                (ex, i) => `
-                <tr>
-                  <td><input class="form-control form-control-sm" name="ex_name_${i}" value="${esc(ex.name)}" /></td>
-                  <td><input class="form-control form-control-sm" name="ex_sets_${i}" value="${esc(ex.sets)}" style="width:62px;" /></td>
-                  <td><input class="form-control form-control-sm" name="ex_reps_${i}" value="${esc(ex.reps)}" style="width:76px;" /></td>
-                  <td><input class="form-control form-control-sm" name="ex_load_${i}" value="${esc(ex.load)}" /></td>
-                  <td><input class="form-control form-control-sm" name="ex_rpe_${i}" value="${esc(ex.rpe || "")}" style="width:66px;" /></td>
-                </tr>`
-              )
-              .join("")}
-          </tbody>
-        </table>
-      </div>
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Feedback</label><input class="form-control" name="client_feedback" /></div>
-        <div class="form-group"><label class="form-label">Sintomi (se presenti)</label><input class="form-control" name="reported_symptoms" /></div>
-      </div>
-      <div class="form-group"><label class="form-label">Note prossima seduta</label><input class="form-control" name="next_session_notes" /></div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" id="cancelWLogBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Salva seduta</button>
-      </div>
-    </form>
-  `,
-    { wide: true }
-  );
-  document.getElementById("cancelWLogBtn")?.addEventListener("click", closeModal);
-  document.getElementById("workoutLogForm")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const actual = planned.map((_, i) => ({
-      name: fd.get(`ex_name_${i}`),
-      sets: fd.get(`ex_sets_${i}`),
-      reps: fd.get(`ex_reps_${i}`),
-      load: fd.get(`ex_load_${i}`),
-      rpe: fd.get(`ex_rpe_${i}`),
-      done: true
-    }));
-    await apiFetch("/api/fitness/workout-logs", {
-      method: "POST",
-      body: {
-        person_id: personId,
-        program_id: program ? program.id : null,
-        appointment_id: appointmentId,
-        workout_day_name: fd.get("workout_day_name"),
-        session_date: fd.get("session_date"),
-        session_rpe: fd.get("session_rpe"),
-        planned_exercises: planned,
-        actual_exercises: actual,
-        client_feedback: fd.get("client_feedback"),
-        reported_symptoms: fd.get("reported_symptoms"),
-        symptom_severity: fd.get("reported_symptoms") ? 3 : 0,
-        next_session_notes: fd.get("next_session_notes")
-      }
-    });
-    closeModal();
-    await refreshCurrentView();
-  });
-}
-
 function showAddConsentModal(personId) {
   openModal(`
     <h2 class="modal-title">Registra consenso</h2>
@@ -3946,11 +2956,7 @@ function showAddConsentModal(personId) {
       <div class="grid-2">
         <div class="form-group">
           <label class="form-label">Stato</label>
-          <select class="form-control" name="status">
-            <option value="acquisito">Acquisito</option>
-            <option value="revocato">Revocato</option>
-            <option value="in_attesa">In attesa</option>
-          </select>
+          <select class="form-control" name="status"><option value="acquisito">Acquisito</option><option value="revocato">Revocato</option><option value="in_attesa">In attesa</option></select>
         </div>
         <div class="form-group"><label class="form-label">Data</label><input class="form-control" type="date" name="signed_date" value="${todayRomeStr()}" /></div>
       </div>
@@ -4049,7 +3055,6 @@ async function initApp() {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   }
 
-  // Login
   document.getElementById("loginForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -4086,7 +3091,6 @@ async function initApp() {
     }
   });
 
-  // Navigazione
   document.querySelectorAll("[data-nav]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const nav = btn.getAttribute("data-nav");
@@ -4111,7 +3115,6 @@ async function initApp() {
 
   document.getElementById("qaNewPersonBtn")?.addEventListener("click", () => showNewPersonModal());
 
-  // Ricerca globale
   const searchInput = document.getElementById("globalSearchInput");
   const searchDrop = document.getElementById("globalSearchDropdown");
   searchInput?.addEventListener("input", async (e) => {
@@ -4131,7 +3134,7 @@ async function initApp() {
           <div class="search-result-item" data-search-pick="${p.id}">
             <div>
               <div style="font-weight:600;">${esc(p.last_name)} ${esc(p.first_name)}</div>
-              <div style="font-size:12px; color:var(--text-muted);">${esc(p.sport_activity || p.phone || "")}</div>
+              <div style="font-size:12px; color:var(--text-muted);">${esc(p.current_pain_notes || p.sport_activity || p.phone || "")}</div>
             </div>
             <div style="display:flex; gap:4px;">
               ${p.physio_active ? `<span class="tag tag-accent">Fisio</span>` : ""}
@@ -4157,7 +3160,6 @@ async function initApp() {
     }
   });
 
-  // Stato auth iniziale
   try {
     const status = await apiFetch("/api/auth/status", { silentStatus: true });
     state.envMode = status.env_mode || "prod";

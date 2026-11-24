@@ -538,6 +538,80 @@ def create_package(conn: sqlite3.Connection, payload: Dict[str, Any], actor: str
     return compute_package_summary(conn, pkg_row)
 
 
+def record_manual_package_movement(
+    conn: sqlite3.Connection,
+    package_id: int,
+    payload: Dict[str, Any],
+    actor: str = "Professionista",
+) -> Dict[str, Any]:
+    pkg = row_to_dict(conn.execute("SELECT * FROM packages WHERE id = ?", (package_id,)).fetchone())
+    if not pkg:
+        raise NotFoundError("Pacchetto non trovato.")
+    summary = compute_package_summary(conn, pkg)
+    action = str(payload.get("action") or "consume").lower()
+    now = now_rome_iso()
+    session_date = (payload.get("session_date") or "").strip()
+    mov_ts = f"{session_date}T{now[11:]}" if len(session_date) == 10 and session_date[4] == "-" else now
+    idem_key = f"manual_{package_id}_{secrets.token_hex(6)}"
+
+    if action == "consume":
+        if summary["remaining_sessions"] <= 0:
+            raise ValidationError("Nessuna seduta rimanente su questo pacchetto.")
+        mov_type, delta = "CONSUME", 1
+        reason = (payload.get("reason") or "Seduta svolta").strip()
+        audit_act, audit_msg = "CONSUME_PACKAGE_SESSION", f"Scalata 1 seduta da '{pkg['name']}' ({reason})"
+    elif action in ("undo", "reversal"):
+        if summary["consumed_sessions"] <= 0:
+            raise ValidationError("Nessuna seduta svolta da ripristinare su questo pacchetto.")
+        mov_type, delta = "REVERSAL", -1
+        reason = (payload.get("reason") or "Ripristino seduta").strip()
+        audit_act, audit_msg = "UNDO_PACKAGE_SESSION", f"Ripristinata 1 seduta su '{pkg['name']}' ({reason})"
+    else:
+        raise ValidationError("Azione movimento non valida.")
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            """
+            INSERT INTO package_movements (
+                package_id, person_id, appointment_id, movement_type, delta_sessions,
+                reason, idempotency_key, reversed_movement_id, created_at, created_by
+            ) VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, ?, ?)
+            """,
+            (package_id, pkg["person_id"], mov_type, delta, reason, idem_key, mov_ts, actor),
+        )
+        new_rem = summary["remaining_sessions"] - delta
+        if pkg["status"] in ("attivo", "esaurito"):
+            next_status = "esaurito" if new_rem <= 0 else "attivo"
+            if next_status != pkg["status"]:
+                conn.execute("UPDATE packages SET status = ?, updated_at = ? WHERE id = ?", (next_status, now, package_id))
+        log_audit(conn, audit_act, "packages", package_id, pkg["person_id"], audit_msg, actor=actor)
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
+    fresh = row_to_dict(conn.execute("SELECT * FROM packages WHERE id = ?", (package_id,)).fetchone())
+    return compute_package_summary(conn, fresh)
+
+
+def delete_package(conn: sqlite3.Connection, package_id: int, actor: str = "Professionista") -> Dict[str, Any]:
+    pkg = row_to_dict(conn.execute("SELECT * FROM packages WHERE id = ?", (package_id,)).fetchone())
+    if not pkg:
+        raise NotFoundError("Pacchetto non trovato.")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DELETE FROM packages WHERE id = ?", (package_id,))
+        log_audit(conn, "DELETE_PACKAGE", "packages", package_id, pkg["person_id"], f"Eliminato pacchetto '{pkg['name']}'", actor=actor)
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    return {"deleted": True, "id": package_id}
+
+
 def record_payment(conn: sqlite3.Connection, payload: Dict[str, Any], actor: str = "Professionista") -> Dict[str, Any]:
     person_id = int(payload["person_id"])
     package_id = int(payload["package_id"]) if payload.get("package_id") else None
