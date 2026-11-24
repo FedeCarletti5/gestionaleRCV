@@ -3,14 +3,15 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js?v=10";
+} from "./body_map.js?v=11";
 import {
   PCS_ITEMS,
   TSK13_ITEMS,
   computeScaleBreakdown,
   buildClinicalNoteFromBreakdown,
   parseTallyScalesCsv
-} from "./scales.js?v=10";
+} from "./scales.js?v=11";
+import { renderAnamnesisTab } from "./anamnesis.js?v=11";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
@@ -514,7 +515,8 @@ async function renderPersonDossierView(container, personId) {
 
   const tabs = [
     { id: "profilo", label: "Profilo", count: null },
-    { id: "fisio", label: "Clinica & Scale", count: totalScalesCount || dossier.physio.episodes.length || null },
+    { id: "anamnesi", label: "Anamnesi", count: null },
+    { id: "fisio", label: "Scale & Note", count: totalScalesCount || null },
     { id: "pacchetti", label: "Pacchetti", count: activePackages.length ? `${totalRemSessions} rim.` : dossier.packages.length || null },
     { id: "documenti", label: "Documenti", count: dossier.attachments.length + dossier.consents.length || null }
   ];
@@ -604,6 +606,23 @@ async function renderPersonDossierView(container, personId) {
   const subViewport = document.getElementById("personSubtabViewport");
   if (state.selectedPersonTab === "profilo") {
     renderPersonTabProfilo(subViewport, dossier);
+  } else if (state.selectedPersonTab === "anamnesi") {
+    renderAnamnesisTab(subViewport, dossier, {
+      selectedEpisodeId: state.selectedEpisodeId,
+      onSelectEpisode: async (epId) => {
+        state.selectedEpisodeId = epId;
+        await renderPersonDossierView(container, p.id);
+      },
+      onNewEpisode: () => showNewPhysioEpisodeModal(p.id),
+      onSave: async (payload) => {
+        const res = await apiFetch(`/api/people/${p.id}/anamnesis`, {
+          method: "PUT",
+          body: payload
+        });
+        if (res?.episode_id) state.selectedEpisodeId = res.episode_id;
+        await renderPersonDossierView(container, p.id);
+      }
+    });
   } else if (state.selectedPersonTab === "fisio") {
     renderPersonTabFisio(subViewport, dossier);
   } else if (state.selectedPersonTab === "pacchetti") {
@@ -973,14 +992,18 @@ function renderPersonTabFisio(viewport, dossier) {
       ${renderClinicalNotesList(activeEp.notes)}
     </div>
 
-    <!-- 3. VALUTAZIONI E MAPPA CORPO -->
-    <div class="card">
-      <div class="card-header">
-        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-          <h3 class="card-title">Valutazioni cliniche</h3>
-          ${
-            evals.length
-              ? `<select class="form-control form-control-sm" id="evalHistorySelect" style="width:auto;">
+    ${
+      evals.length
+        ? `<details class="clean-details">
+            <summary>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span>Esami obiettivi / Valutazioni (${evals.length})</span>
+              </div>
+              ${ico("chevronDown")}
+            </summary>
+            <div class="details-body">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+                <select class="form-control form-control-sm" id="evalHistorySelect" style="width:auto;">
                   ${evals
                     .map(
                       (ev) =>
@@ -989,42 +1012,18 @@ function renderPersonTabFisio(viewport, dossier) {
                         </option>`
                     )
                     .join("")}
-                </select>`
-              : ""
-          }
-        </div>
-        <div style="display:flex; gap:6px; flex-wrap:wrap;">
-          ${currentEval && currentEval.status === "bozza" ? `<button class="btn btn-sm btn-secondary" id="editCurrentEvalBtn">${ico("edit")} Modifica</button>` : ""}
-          ${currentEval && currentEval.status === "finalizzata" ? `<button class="btn btn-sm btn-ghost" id="addEvalAddendumBtn">+ Integrazione</button>` : ""}
-          <button class="btn btn-sm btn-secondary" id="newEvalModalBtn">${ico("plus")} ${evals.length ? "Rivalutazione" : "Valutazione"}</button>
-        </div>
-      </div>
-      ${
-        currentEval
-          ? renderEvaluationSection(currentEval, previousEval)
-          : `<div style="color:var(--text-muted); font-size:13px;">Nessuna valutazione registrata.</div>`
-      }
-    </div>
-
-    <!-- 4. RED & YELLOW FLAGS (RICHIUDIBILE) -->
-    <details class="clean-details" ${fSum.red_present > 0 ? "open" : ""}>
-      <summary>
-        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-          <span>Red &amp; Yellow Flags</span>
-          ${fSum.red_present > 0 ? `<span class="tag tag-danger">${fSum.red_present} Red presenti</span>` : ""}
-          ${fSum.yellow_present > 0 ? `<span class="tag tag-warning">${fSum.yellow_present} Yellow presenti</span>` : ""}
-          ${totalPresent === 0 ? `<span class="tag">Nessuna presente</span>` : ""}
-          ${totalUnassessed > 0 ? `<span class="tag">${totalUnassessed} da valutare</span>` : ""}
-        </div>
-        ${ico("chevronDown")}
-      </summary>
-      <div class="details-body">
-        <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
-          <button class="btn btn-sm btn-secondary" id="addCustomFlagBtn">${ico("plus")} Aggiungi flag</button>
-        </div>
-        ${renderClinicalFlagsTable(activeEp.flags)}
-      </div>
-    </details>
+                </select>
+                <div style="display:flex; gap:6px;">
+                  ${currentEval && currentEval.status === "bozza" ? `<button class="btn btn-sm btn-secondary" id="editCurrentEvalBtn">${ico("edit")} Modifica</button>` : ""}
+                  ${currentEval && currentEval.status === "finalizzata" ? `<button class="btn btn-sm btn-ghost" id="addEvalAddendumBtn">+ Integrazione</button>` : ""}
+                  <button class="btn btn-sm btn-secondary" id="newEvalModalBtn">${ico("plus")} Rivalutazione</button>
+                </div>
+              </div>
+              ${currentEval ? renderEvaluationSection(currentEval, previousEval) : ""}
+            </div>
+          </details>`
+        : ""
+    }
   `;
 
   document.getElementById("physioEpisodeSelect")?.addEventListener("change", async (e) => {
@@ -1058,7 +1057,6 @@ function renderPersonTabFisio(viewport, dossier) {
   document.getElementById("addEvalAddendumBtn")?.addEventListener("click", () =>
     showAddendumModal({ evaluation_id: currentEval.id, title: `Valutazione del ${formatDateIt(currentEval.eval_date)}` })
   );
-  document.getElementById("addCustomFlagBtn")?.addEventListener("click", () => showCustomFlagModal(activeEp.id));
 
   viewport.querySelectorAll("[data-quick-flag-status]").forEach((sel) => {
     sel.addEventListener("change", async () => {

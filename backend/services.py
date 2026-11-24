@@ -2286,6 +2286,68 @@ def get_physio_episode_detail(conn: sqlite3.Connection, episode_id: int) -> Dict
 # 5. AREA FITNESS: PROFILO, LIMITAZIONI CONDIVISE, PROGRAMMI VERSIONATI E SEDUTE
 # ==============================================================================
 
+def save_person_anamnesis(
+    conn: sqlite3.Connection,
+    person_id: int,
+    payload: Dict[str, Any],
+    actor: str = "Professionista",
+) -> Dict[str, Any]:
+    person = row_to_dict(conn.execute("SELECT * FROM people WHERE id = ?", (person_id,)).fetchone())
+    if not person:
+        raise NotFoundError("Persona non trovata.")
+    now = now_rome_iso()
+    episode_id = int(payload["episode_id"]) if payload.get("episode_id") else None
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if "person_anamnesis" in payload and payload["person_anamnesis"] is not None:
+            pa = payload["person_anamnesis"]
+            anam_json = pa if isinstance(pa, str) else json.dumps(pa, ensure_ascii=False)
+            conn.execute("UPDATE people SET anamnesis_json = ?, updated_at = ? WHERE id = ?", (anam_json, now, person_id))
+
+        if "episode_intake" in payload and payload["episode_intake"] is not None:
+            ei = payload["episode_intake"]
+            intake_obj = json.loads(ei) if isinstance(ei, str) else (ei or {})
+            intake_json = json.dumps(intake_obj, ensure_ascii=False)
+            motivo_main = str((intake_obj.get("motivo") or {}).get("problema_principale") or "").strip()
+
+            if episode_id:
+                ep = row_to_dict(
+                    conn.execute("SELECT * FROM physio_episodes WHERE id = ? AND person_id = ?", (episode_id, person_id)).fetchone()
+                )
+                if not ep:
+                    raise NotFoundError("Episodio clinico non trovato.")
+                next_title = (payload.get("episode_title") or "").strip() or ep["title"]
+                next_complaint = motivo_main or ep["chief_complaint"]
+                conn.execute(
+                    "UPDATE physio_episodes SET intake_json = ?, title = ?, chief_complaint = ?, updated_at = ? WHERE id = ?",
+                    (intake_json, next_title, next_complaint, now, episode_id),
+                )
+            else:
+                ep_title = (payload.get("episode_title") or "").strip() or (motivo_main[:60] if motivo_main else "Scheda anamnestica")
+                ep_complaint = motivo_main or person.get("current_pain_notes") or "Raccolta anamnestica"
+                cur = conn.execute(
+                    """
+                    INSERT INTO physio_episodes (
+                        person_id, title, chief_complaint, body_region, laterality,
+                        start_date, status, intake_json, version, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'attivo', ?, 1, ?, ?)
+                    """,
+                    (person_id, ep_title, ep_complaint, payload.get("body_region") or "", payload.get("laterality") or "N/A", now[:10], intake_json, now, now),
+                )
+                episode_id = cur.lastrowid
+                conn.execute("UPDATE people SET physio_active = 1, updated_at = ? WHERE id = ?", (now, person_id))
+
+        log_audit(conn, "SAVE_ANAMNESIS", "people", person_id, person_id, "Salvata scheda anamnestica strutturata", actor=actor)
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
+    return {"saved": True, "person_id": person_id, "episode_id": episode_id, "updated_at": now}
+
+
 def create_shared_limitation(conn: sqlite3.Connection, payload: Dict[str, Any], actor: str = "Professionista") -> Dict[str, Any]:
     """
     Pubblica una limitazione funzionale rilevante con fonte e data, visibile nel Fitness

@@ -1389,6 +1389,68 @@ Deno.serve(async (req: Request) => {
       return jsonResponse(200, { deleted: true, person_id: personId });
     }
 
+    const mAnam = path.match(/^\/api\/people\/(\d+)\/anamnesis$/);
+    if (mAnam && (method === "PUT" || method === "POST")) {
+      const personId = Number(mAnam[1]);
+      const [person] = await sql`SELECT * FROM public.people WHERE id = ${personId}`;
+      if (!person) throw new NotFoundError("Persona non trovata.");
+
+      const now = nowRomeIso();
+      if (payload.person_anamnesis !== undefined) {
+        const anamJson =
+          typeof payload.person_anamnesis === "string"
+            ? payload.person_anamnesis
+            : JSON.stringify(payload.person_anamnesis || {});
+        await sql`
+          UPDATE public.people
+          SET anamnesis_json = ${anamJson}, updated_at = ${now}
+          WHERE id = ${personId}
+        `;
+      }
+
+      let episodeId = payload.episode_id ? Number(payload.episode_id) : null;
+      if (payload.episode_intake !== undefined) {
+        const intakeObj =
+          typeof payload.episode_intake === "string"
+            ? JSON.parse(payload.episode_intake || "{}")
+            : payload.episode_intake || {};
+        const intakeJson = JSON.stringify(intakeObj);
+        const motivoMain = String(intakeObj?.motivo?.problema_principale || "").trim();
+
+        if (episodeId) {
+          const [ep] = await sql`SELECT * FROM public.physio_episodes WHERE id = ${episodeId} AND person_id = ${personId}`;
+          if (!ep) throw new NotFoundError("Episodio clinico non trovato.");
+          const nextTitle = (payload.episode_title || "").trim() || ep.title;
+          const nextComplaint = motivoMain || ep.chief_complaint;
+          await sql`
+            UPDATE public.physio_episodes
+            SET intake_json = ${intakeJson},
+                title = ${nextTitle},
+                chief_complaint = ${nextComplaint},
+                updated_at = ${now}
+            WHERE id = ${episodeId}
+          `;
+        } else {
+          const epTitle = (payload.episode_title || "").trim() || (motivoMain ? motivoMain.slice(0, 60) : "Scheda anamnestica");
+          const epComplaint = motivoMain || person.current_pain_notes || "Raccolta anamnestica";
+          const [createdEp] = await sql`
+            INSERT INTO public.physio_episodes (
+              person_id, title, chief_complaint, body_region, laterality,
+              start_date, status, intake_json, version, created_at, updated_at
+            ) VALUES (
+              ${personId}, ${epTitle}, ${epComplaint}, ${payload.body_region || ""}, ${payload.laterality || "N/A"},
+              ${now.slice(0, 10)}, 'attivo', ${intakeJson}, 1, ${now}, ${now}
+            ) RETURNING id
+          `;
+          episodeId = createdEp.id;
+          await sql`UPDATE public.people SET physio_active = 1, updated_at = ${now} WHERE id = ${personId}`;
+        }
+      }
+
+      await logAudit("SAVE_ANAMNESIS", "people", personId, personId, "Salvata scheda anamnestica strutturata", actor);
+      return jsonResponse(200, { saved: true, person_id: personId, episode_id: episodeId, updated_at: now });
+    }
+
     // --- PONTE LIMITAZIONI CONDIVISE ---
     if (path === "/api/shared-limitations" && method === "POST") {
       const personId = Number(payload.person_id);

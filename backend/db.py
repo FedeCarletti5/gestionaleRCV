@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS people (
     training_frequency TEXT,
     training_location TEXT,
     general_notes TEXT,
+    anamnesis_json TEXT NOT NULL DEFAULT '{}',
     physio_active INTEGER NOT NULL DEFAULT 0,
     fitness_active INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'attivo' CHECK (status IN ('attivo', 'archiviato')),
@@ -98,6 +99,7 @@ CREATE TABLE IF NOT EXISTS physio_episodes (
     therapist_goals TEXT,
     closure_summary TEXT,
     closure_outcome TEXT,
+    intake_json TEXT NOT NULL DEFAULT '{}',
     version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -584,9 +586,13 @@ def init_db(db_path: Optional[Path] = None) -> None:
             ("goals", "TEXT"),
             ("training_frequency", "TEXT"),
             ("training_location", "TEXT"),
+            ("anamnesis_json", "TEXT NOT NULL DEFAULT '{}'"),
         ]:
             if col_name not in existing_cols:
                 conn.execute(f"ALTER TABLE people ADD COLUMN {col_name} {col_type}")
+        ep_cols = {r["name"] for r in conn.execute("PRAGMA table_info(physio_episodes)").fetchall()}
+        if "intake_json" not in ep_cols:
+            conn.execute("ALTER TABLE physio_episodes ADD COLUMN intake_json TEXT NOT NULL DEFAULT '{}'")
         now = now_rome_iso()
         # Assicura l'esistenza dell'account personale (registrazione pubblica disabilitata)
         user_row = conn.execute("SELECT id FROM users LIMIT 1").fetchone()

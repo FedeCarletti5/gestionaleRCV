@@ -67,6 +67,7 @@ from backend.services import (
     save_consent_record,
     save_fitness_profile,
     save_fitness_program,
+    save_person_anamnesis,
     store_private_attachment,
     update_appointment_or_status,
     update_person,
@@ -725,6 +726,12 @@ class GestionaleHTTPHandler(BaseHTTPRequestHandler):
                     if fp.exists():
                         fp.unlink()
                 self._send_json(200, {"deleted": True, "person_id": person_id})
+                return
+
+            m_anam = re.match(r"^/api/people/(\d+)/anamnesis$", path)
+            if m_anam and method in ("PUT", "POST"):
+                res = save_person_anamnesis(conn, int(m_anam.group(1)), payload, actor=actor)
+                self._send_json(200, res)
                 return
 
             # --- PONTE LIMITAZIONI CONDIVISE ---
