@@ -3,15 +3,15 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js?v=15";
+} from "./body_map.js?v=16";
 import {
   PCS_ITEMS,
   TSK13_ITEMS,
   computeScaleBreakdown,
   buildClinicalNoteFromBreakdown,
   parseTallyScalesCsv
-} from "./scales.js?v=15";
-import { renderAnamnesisTab } from "./anamnesis.js?v=15";
+} from "./scales.js?v=16";
+import { renderAnamnesisTab } from "./anamnesis.js?v=16";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
@@ -440,9 +440,10 @@ async function renderPeopleListView(container) {
 
         const summaryText = p.current_pain_notes || p.goals || p.sport_activity || "—";
         const rem = Number(p.remaining_sessions || 0);
+        const remTone = getSessionCounterTone(rem);
         const remBadge =
           rem > 0
-            ? `<span class="tag ${rem <= 2 ? "tag-warning" : "tag-accent"} num"><strong>${rem}</strong> rim.</span>`
+            ? `<span class="tag num" style="color:${remTone.text}; background:${remTone.bg}; border:1px solid ${remTone.border};"><strong>${rem}</strong> rim.</span>`
             : `<span style="color:var(--text-muted);">—</span>`;
 
         return `
@@ -507,6 +508,8 @@ async function renderPersonDossierView(container, personId) {
   const p = dossier.person;
   const activePackages = (dossier.packages || []).filter((k) => k.status === "attivo");
   const totalRemSessions = activePackages.reduce((acc, k) => acc + Number(k.remaining_sessions || 0), 0);
+  const totalActiveSessions = activePackages.reduce((acc, k) => acc + Number(k.total_sessions || 0), 0);
+  const headerRemTone = getSessionCounterTone(totalRemSessions, totalActiveSessions || null);
 
   state.selectedPersonTab = normalizePersonTab(state.selectedPersonTab);
 
@@ -519,7 +522,15 @@ async function renderPersonDossierView(container, personId) {
     { id: "profilo", label: "Profilo", count: null },
     { id: "anamnesi", label: "Anamnesi", count: null },
     { id: "fisio", label: "Scale & Note", count: totalScalesCount || null },
-    { id: "pacchetti", label: "Pacchetti", count: activePackages.length ? `${totalRemSessions} rim.` : dossier.packages.length || null },
+    {
+      id: "pacchetti",
+      label: "Pacchetti",
+      count: activePackages.length ? `${totalRemSessions} rim.` : dossier.packages.length || null,
+      countStyle:
+        activePackages.length && totalRemSessions > 0
+          ? `color:${headerRemTone.text}; background:${headerRemTone.bg}; border:1px solid ${headerRemTone.border};`
+          : ""
+    },
     { id: "documenti", label: "Documenti", count: dossier.attachments.length + dossier.consents.length || null }
   ];
 
@@ -554,8 +565,8 @@ async function renderPersonDossierView(container, personId) {
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         ${
           totalRemSessions > 0
-            ? `<button class="btn btn-sm btn-secondary" id="headerGoPackagesBtn">
-                <strong class="num">${totalRemSessions}</strong> sedute rimanenti
+            ? `<button class="btn btn-sm btn-secondary" id="headerGoPackagesBtn" style="color:${headerRemTone.text}; background:${headerRemTone.bg}; border-color:${headerRemTone.border};">
+                <strong class="num">${totalRemSessions}</strong> ${totalRemSessions === 1 ? "seduta rimanente" : "sedute rimanenti"}
                </button>`
             : ""
         }
@@ -568,7 +579,7 @@ async function renderPersonDossierView(container, personId) {
           (t) => `
           <button class="tab-btn ${state.selectedPersonTab === t.id ? "active" : ""}" data-person-subtab="${t.id}">
             <span>${t.label}</span>
-            ${t.count ? `<span class="tab-count num">${esc(t.count)}</span>` : ""}
+            ${t.count ? `<span class="tab-count num" ${t.countStyle ? `style="${t.countStyle}"` : ""}>${esc(t.count)}</span>` : ""}
           </button>
         `
         )
@@ -1390,12 +1401,80 @@ function renderClinicalFlagsTable(flags) {
 // TAB 3: PACCHETTI DELLA PERSONA (SOLO CONTEGGIO SEDUTE — ZERO SOLDI)
 // ============================================================================
 
+/**
+ * Scala cromatica fluida (verde smeraldo -> lime -> ambra -> arancio -> rosso)
+ * calibrata sul numero di sedute rimanenti rispetto al totale del pacchetto (5, 10, 11 o singola).
+ */
+function getSessionCounterTone(remaining, total = null) {
+  const rem = Math.max(0, Number(remaining || 0));
+  if (rem === 0) {
+    return {
+      text: "#6b7280",
+      barStart: "#cbd5e1",
+      barEnd: "#94a3b8",
+      bg: "#f3f4f6",
+      border: "#e5e7eb",
+      isEmpty: true
+    };
+  }
+
+  const tot = total !== null && total !== undefined && Number(total) > 0 ? Number(total) : null;
+  let t;
+  if (tot === 1) {
+    // Seduta singola non ancora svolta (1/1): verde pieno
+    t = 1;
+  } else if (tot !== null && tot >= 2) {
+    // 1 rimasta -> rosso (0.0); pieno (rem == tot) -> verde smeraldo (1.0)
+    t = Math.max(0, Math.min(1, (rem - 1) / (tot - 1)));
+  } else {
+    // Fallback quando conosciamo solo il totale residuo (es. lista Persone)
+    t = Math.max(0, Math.min(1, (rem - 1) / 4));
+  }
+
+  const stops = [
+    { at: 0.0, text: [220, 38, 38], bar1: [239, 68, 68], bar2: [220, 38, 38], bg: [254, 242, 242], border: [254, 202, 202] },
+    { at: 0.25, text: [234, 88, 12], bar1: [249, 115, 22], bar2: [234, 88, 12], bg: [255, 247, 237], border: [254, 215, 170] },
+    { at: 0.5, text: [180, 120, 4], bar1: [234, 179, 8], bar2: [202, 138, 4], bg: [254, 252, 232], border: [253, 230, 138] },
+    { at: 0.75, text: [63, 145, 24], bar1: [101, 185, 38], bar2: [63, 145, 24], bg: [247, 254, 231], border: [217, 249, 157] },
+    { at: 1.0, text: [21, 128, 61], bar1: [34, 197, 94], bar2: [22, 163, 74], bg: [240, 253, 244], border: [187, 247, 208] }
+  ];
+
+  let lo = stops[0];
+  let hi = stops[stops.length - 1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (t >= stops[i].at && t <= stops[i + 1].at) {
+      lo = stops[i];
+      hi = stops[i + 1];
+      break;
+    }
+  }
+  const f = hi.at === lo.at ? 0 : (t - lo.at) / (hi.at - lo.at);
+  const lerp = (a, b) =>
+    `rgb(${Math.round(a[0] + (b[0] - a[0]) * f)}, ${Math.round(a[1] + (b[1] - a[1]) * f)}, ${Math.round(a[2] + (b[2] - a[2]) * f)})`;
+
+  return {
+    text: lerp(lo.text, hi.text),
+    barStart: lerp(lo.bar1, hi.bar1),
+    barEnd: lerp(lo.bar2, hi.bar2),
+    bg: lerp(lo.bg, hi.bg),
+    border: lerp(lo.border, hi.border),
+    isEmpty: false
+  };
+}
+
+function isPackageLow(pkg) {
+  const total = Number(pkg?.total_sessions || 0);
+  const rem = Number(pkg?.remaining_sessions || 0);
+  return total >= 2 && rem > 0 && rem <= 2;
+}
+
 function renderPackageProgressBar(pkg) {
   const total = Math.max(1, Number(pkg.total_sessions || 1));
   const rem = Math.max(0, Number(pkg.remaining_sessions || 0));
   const pct = Math.min(100, Math.round((rem / total) * 100));
-  const cls = rem === 0 ? "empty" : rem <= 2 ? "low" : "";
-  return `<div class="progress-bar"><div class="progress-fill ${cls}" style="width:${pct}%;"></div></div>`;
+  const tone = getSessionCounterTone(rem, total);
+  const fillBg = rem === 0 ? "transparent" : `linear-gradient(90deg, ${tone.barStart}, ${tone.barEnd})`;
+  return `<div class="progress-bar"><div class="progress-fill" style="width:${pct}%; background:${fillBg};"></div></div>`;
 }
 
 function areaLabel(code) {
@@ -1502,8 +1581,11 @@ function renderPersonTabPacchetti(viewport, dossier) {
             )
             .join("");
 
-          const remColor =
-            pkg.remaining_sessions === 0 ? "var(--text-muted)" : pkg.remaining_sessions <= 2 ? "var(--warning)" : "var(--accent)";
+          const remTone = getSessionCounterTone(pkg.remaining_sessions, pkg.total_sessions);
+          const remCardStyle =
+            pkg.remaining_sessions > 0
+              ? `background:${remTone.bg}; border-color:${remTone.border};`
+              : "";
 
           return `
             <div class="card">
@@ -1535,7 +1617,10 @@ function renderPersonTabPacchetti(viewport, dossier) {
               <div class="grid-3" style="margin-bottom:12px;">
                 <div class="stat-card"><div class="stat-label">Totali</div><div class="stat-value">${pkg.total_sessions}</div></div>
                 <div class="stat-card"><div class="stat-label">Svolte</div><div class="stat-value">${pkg.consumed_sessions}</div></div>
-                <div class="stat-card"><div class="stat-label">Rimanenti</div><div class="stat-value" style="color:${remColor};">${pkg.remaining_sessions}</div></div>
+                <div class="stat-card" style="${remCardStyle}">
+                  <div class="stat-label" style="${pkg.remaining_sessions > 0 ? `color:${remTone.text};` : ""}">Rimanenti</div>
+                  <div class="stat-value" style="color:${remTone.text};">${pkg.remaining_sessions}</div>
+                </div>
               </div>
 
               ${renderPackageProgressBar(pkg)}
@@ -1742,7 +1827,12 @@ async function renderPackagesView(container) {
   const enriched = packages.map((pkg) => ({ ...pkg, _cat: inferPackageCategory(pkg) }));
   const activePkgs = enriched.filter((k) => k.status === "attivo");
   const remainingTotal = activePkgs.reduce((a, k) => a + Number(k.remaining_sessions || 0), 0);
-  const lowCount = activePkgs.filter((k) => Number(k.remaining_sessions || 0) <= 2).length;
+  const totalActiveCapacity = activePkgs.reduce((a, k) => a + Number(k.total_sessions || 0), 0);
+  const lowPkgs = activePkgs.filter((k) => isPackageLow(k));
+  const lowCount = lowPkgs.length;
+  const hasCriticalLow = lowPkgs.some((k) => Number(k.remaining_sessions || 0) <= 1);
+  const remSummaryTone = getSessionCounterTone(remainingTotal, totalActiveCapacity || null);
+  const lowTone = lowCount > 0 ? getSessionCounterTone(hasCriticalLow ? 1 : 2, 5) : null;
 
   const filtered = enriched.filter((k) => {
     if (state.packagesCategoryFilter !== "tutti" && k._cat.key !== state.packagesCategoryFilter) return false;
@@ -1756,8 +1846,9 @@ async function renderPackagesView(container) {
   }
 
   const rows = filtered
-    .map(
-      (pkg) => `
+    .map((pkg) => {
+      const tone = getSessionCounterTone(pkg.remaining_sessions, pkg.total_sessions);
+      return `
       <tr>
         <td>
           <a href="#" data-open-person="${pkg.person_id}" data-person-tab="pacchetti" style="font-weight:600; color:var(--text); text-decoration:none;" class="sensitive-data">
@@ -1777,7 +1868,7 @@ async function renderPackagesView(container) {
           ${renderPackageProgressBar(pkg)}
         </td>
         <td>
-          <span class="tag ${pkg.remaining_sessions === 0 ? "" : pkg.remaining_sessions <= 2 ? "tag-warning" : "tag-accent"} num">
+          <span class="tag num" style="color:${tone.text}; background:${tone.bg}; border:1px solid ${tone.border};">
             <strong>${pkg.remaining_sessions}</strong> rim.
           </span>
         </td>
@@ -1786,8 +1877,8 @@ async function renderPackagesView(container) {
           ${pkg.consumed_sessions > 0 ? `<button class="btn btn-xs btn-secondary" data-pkg-undo="${pkg.id}" title="Ripristina +1">+1</button>` : ""}
           <button class="btn btn-xs btn-ghost" data-open-person="${pkg.person_id}" data-person-tab="pacchetti">Scheda</button>
         </td>
-      </tr>`
-    )
+      </tr>`;
+    })
     .join("");
 
   container.innerHTML = `
@@ -1798,8 +1889,14 @@ async function renderPackagesView(container) {
 
     <div class="grid-3" style="margin-bottom:16px;">
       <div class="stat-card"><div class="stat-label">Pacchetti attivi</div><div class="stat-value">${activePkgs.length}</div></div>
-      <div class="stat-card"><div class="stat-label">Sedute rimanenti</div><div class="stat-value" style="color:var(--accent);">${remainingTotal}</div></div>
-      <div class="stat-card"><div class="stat-label">In esaurimento (≤ 2)</div><div class="stat-value" style="color:${lowCount > 0 ? "var(--warning)" : "var(--text)"};">${lowCount}</div></div>
+      <div class="stat-card" style="${remainingTotal > 0 ? `background:${remSummaryTone.bg}; border-color:${remSummaryTone.border};` : ""}">
+        <div class="stat-label" style="${remainingTotal > 0 ? `color:${remSummaryTone.text};` : ""}">Sedute rimanenti</div>
+        <div class="stat-value" style="color:${remainingTotal > 0 ? remSummaryTone.text : "var(--text-muted)"};">${remainingTotal}</div>
+      </div>
+      <div class="stat-card" style="${lowTone ? `background:${lowTone.bg}; border-color:${lowTone.border};` : ""}">
+        <div class="stat-label" style="${lowTone ? `color:${lowTone.text};` : ""}">In esaurimento (≤ 2)</div>
+        <div class="stat-value" style="color:${lowTone ? lowTone.text : "var(--text)"};">${lowCount}</div>
+      </div>
     </div>
 
     <div class="card card-flush">
