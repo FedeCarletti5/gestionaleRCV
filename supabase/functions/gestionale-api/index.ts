@@ -209,6 +209,24 @@ async function verifyTotpCode(secretB32: string, code: string): Promise<boolean>
 }
 
 const OUTCOME_SCALES_CATALOG: Record<string, Record<string, string>> = {
+  PCS: {
+    scale_code: "PCS",
+    scale_name: "Pain Catastrophizing Scale (PCS-I)",
+    scale_version: "PCS-I 13 item (0-52)",
+    source_mode: "internal_verified",
+    score_unit: "/52",
+    description:
+      "Scala italiana di catastrofizzazione del dolore (13 item, 0-4; sottoscale: Ruminazione, Amplificazione, Impotenza; soglia clinica >= 30).",
+  },
+  "TSK-13": {
+    scale_code: "TSK-13",
+    scale_name: "Tampa Scale of Kinesiophobia (TSK-I 13 item)",
+    scale_version: "TSK-I 13 item (Monticone 2010, 13-52)",
+    source_mode: "internal_verified",
+    score_unit: "/52",
+    description:
+      "Scala italiana di kinesiofobia a 13 item (1-4; sottoscale: Evitamento attività, Focus somatico/Danno; fasce Neblett 2016: 13-22 subclinica, 23-32 lieve, 33-42 moderata, 43-52 severa).",
+  },
   NPRS: {
     scale_code: "NPRS",
     scale_name: "Numeric Pain Rating Scale (Intensità del Dolore 0-10)",
@@ -517,6 +535,14 @@ async function getPersonFullDossier(personId: number) {
   const totalAvailableSessions = packages
     .filter((p) => p.status === "attivo")
     .reduce((acc, p) => acc + Number(p.available_to_book || 0), 0);
+  const totalRemainingSessions = packages
+    .filter((p) => p.status === "attivo")
+    .reduce((acc, p) => acc + Number(p.remaining_sessions || 0), 0);
+  const nowIso = nowRomeIso();
+  const upcomingAppts = appointments
+    .filter((a) => (a.status === "prenotato" || a.status === "confermato") && a.end_at >= nowIso)
+    .sort((a, b) => String(a.start_at).localeCompare(String(b.start_at)));
+  const nextAppointment = upcomingAppts[0] || null;
 
   return {
     person,
@@ -525,6 +551,8 @@ async function getPersonFullDossier(personId: number) {
       active_fitness_programs: fitnessPrograms.filter((p) => p.status === "attivo").length,
       active_shared_limitations: sharedLimitations.filter((l) => l.is_active).length,
       total_available_sessions: totalAvailableSessions,
+      total_remaining_sessions: totalRemainingSessions,
+      next_appointment: nextAppointment,
       total_due_cents: totalDueCents,
       has_privacy_notice: consents.some((c) => c.doc_type === "informativa_privacy" && c.status === "acquisito"),
       has_health_consent: consents.some(
@@ -1777,6 +1805,48 @@ Deno.serve(async (req: Request) => {
         const val = Number(payload.score_value);
         if (val < 0 || val > 100) throw new ValidationError("Il valore SANE deve essere compreso tra 0 e 100%.");
         scoreValue = Math.round(val * 10) / 10;
+      } else if (scaleCode === "PCS" || scaleCode === "TSK-13") {
+        const minItem = scaleCode === "PCS" ? 0 : 1;
+        const maxItem = 4;
+        const minTotal = scaleCode === "PCS" ? 0 : 13;
+        const maxTotal = 52;
+        if (Array.isArray(responses) && responses.length > 0) {
+          let sum = 0;
+          totalItems = responses.length;
+          completedItems = 0;
+          missingItems = 0;
+          const cleaned = responses.map((it: any, idx: number) => {
+            const rawS = it?.score;
+            if (rawS === null || rawS === undefined || rawS === "") {
+              missingItems++;
+              return { item: Number(it?.item || idx + 1), subscale: it?.subscale || "", text: it?.text || "", score: null };
+            }
+            const sVal = Number(rawS);
+            if (!Number.isFinite(sVal) || sVal < minItem || sVal > maxItem) {
+              throw new ValidationError(`Punteggio item #${idx + 1} non valido per ${scaleCode} (${minItem}-${maxItem}).`);
+            }
+            completedItems++;
+            sum += sVal;
+            return { item: Number(it?.item || idx + 1), subscale: it?.subscale || "", text: it?.text || "", score: sVal };
+          });
+          if (completedItems === 0) throw new ValidationError(`Inserisci almeno una risposta valida per ${scaleCode}.`);
+          responses = cleaned;
+          scoreValue = Math.round(sum * 100) / 100;
+          sourceMode = payload.source_mode === "external_score" ? "external_score" : "internal_verified";
+        } else {
+          if (payload.score_value === undefined || payload.score_value === null || payload.score_value === "") {
+            throw new ValidationError(`Inserisci il punteggio totale per ${scaleCode} (${minTotal}-${maxTotal}).`);
+          }
+          const val = Number(payload.score_value);
+          if (!Number.isFinite(val) || val < minTotal || val > maxTotal) {
+            throw new ValidationError(`Il punteggio ${scaleCode} deve essere compreso tra ${minTotal} e ${maxTotal}.`);
+          }
+          scoreValue = Math.round(val * 100) / 100;
+          totalItems = Number(payload.total_items || 13);
+          missingItems = Number(payload.missing_items || 0);
+          completedItems = Math.max(0, totalItems - missingItems);
+          sourceMode = "external_score";
+        }
       } else {
         sourceMode = "external_score";
         if (payload.score_value === undefined || payload.score_value === null || payload.score_value === "") {
@@ -1802,7 +1872,18 @@ Deno.serve(async (req: Request) => {
           ${payload.clinical_note || ""}, ${recordedDate}, ${now}
         ) RETURNING *
       `;
+      await logAudit("RECORD_OUTCOME_MEASURE", "outcome_measures", om.id, ep.person_id, `Registrata scala ${scaleCode}: ${scoreValue}${scoreUnit}`, actor);
       return jsonResponse(201, { ...om, responses });
+    }
+
+    const mOmDel = path.match(/^\/api\/physio\/outcome-measures\/(\d+)$/);
+    if (mOmDel && method === "DELETE") {
+      const omId = Number(mOmDel[1]);
+      const [existing] = await sql`SELECT * FROM public.outcome_measures WHERE id = ${omId}`;
+      if (!existing) throw new NotFoundError("Scala di esito non trovata.");
+      await sql`DELETE FROM public.outcome_measures WHERE id = ${omId}`;
+      await logAudit("DELETE_OUTCOME_MEASURE", "outcome_measures", omId, existing.person_id, `Eliminata rilevazione ${existing.scale_code} (${existing.recorded_date})`, actor);
+      return jsonResponse(200, { deleted: true, id: omId });
     }
 
     const mNote = path.match(/^\/api\/physio\/notes(?:\/(\d+))?$/);

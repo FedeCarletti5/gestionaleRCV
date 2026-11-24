@@ -1656,6 +1656,22 @@ def save_clinical_flag(conn: sqlite3.Connection, payload: Dict[str, Any], actor:
 # ==============================================================================
 
 OUTCOME_SCALES_CATALOG = {
+    "PCS": {
+        "scale_code": "PCS",
+        "scale_name": "Pain Catastrophizing Scale (PCS-I)",
+        "scale_version": "PCS-I 13 item (0-52)",
+        "source_mode": "internal_verified",
+        "score_unit": "/52",
+        "description": "Scala italiana di catastrofizzazione del dolore (13 item, 0-4; sottoscale: Ruminazione, Amplificazione, Impotenza; soglia clinica >= 30).",
+    },
+    "TSK-13": {
+        "scale_code": "TSK-13",
+        "scale_name": "Tampa Scale of Kinesiophobia (TSK-I 13 item)",
+        "scale_version": "TSK-I 13 item (Monticone 2010, 13-52)",
+        "source_mode": "internal_verified",
+        "score_unit": "/52",
+        "description": "Scala italiana di kinesiofobia a 13 item (1-4; sottoscale: Evitamento attività, Focus somatico/Danno; fasce Neblett 2016: 13-22 subclinica, 23-32 lieve, 33-42 moderata, 43-52 severa).",
+    },
     "NPRS": {
         "scale_code": "NPRS",
         "scale_name": "Numeric Pain Rating Scale (Intensità del Dolore 0-10)",
@@ -1783,6 +1799,44 @@ def record_outcome_measure(conn: sqlite3.Connection, payload: Dict[str, Any], ac
         completed_items = 1
         total_items = 1
         missing_items = 0
+    elif scale_code in ("PCS", "TSK-13"):
+        min_item = 0 if scale_code == "PCS" else 1
+        max_item = 4
+        min_total = 0 if scale_code == "PCS" else 13
+        max_total = 52
+        if isinstance(responses, list) and len(responses) > 0:
+            cleaned = []
+            total_sum = 0.0
+            total_items = len(responses)
+            for idx, it in enumerate(responses):
+                raw_s = it.get("score") if isinstance(it, dict) else None
+                if raw_s is None or raw_s == "":
+                    missing_items += 1
+                    cleaned.append({"item": int(it.get("item") or idx + 1), "subscale": it.get("subscale") or "", "text": it.get("text") or "", "score": None})
+                else:
+                    s_val = float(raw_s)
+                    if s_val < min_item or s_val > max_item:
+                        raise ValidationError(f"Punteggio item #{idx + 1} non valido per {scale_code} ({min_item}-{max_item}).")
+                    completed_items += 1
+                    total_sum += s_val
+                    cleaned.append({"item": int(it.get("item") or idx + 1), "subscale": it.get("subscale") or "", "text": it.get("text") or "", "score": s_val})
+            if completed_items == 0:
+                raise ValidationError(f"Inserisci almeno una risposta valida per {scale_code}.")
+            responses = cleaned
+            score_value = round(total_sum, 2)
+            source_mode = "external_score" if payload.get("source_mode") == "external_score" else "internal_verified"
+        else:
+            raw_val = payload.get("score_value")
+            if raw_val is None or raw_val == "":
+                raise ValidationError(f"Inserisci il punteggio totale per {scale_code} ({min_total}-{max_total}).")
+            val = float(raw_val)
+            if val < min_total or val > max_total:
+                raise ValidationError(f"Il punteggio {scale_code} deve essere compreso tra {min_total} e {max_total}.")
+            score_value = round(val, 2)
+            total_items = int(payload.get("total_items") or 13)
+            missing_items = int(payload.get("missing_items") or 0)
+            completed_items = max(0, total_items - missing_items)
+            source_mode = "external_score"
     else:
         # Punteggio registrato esternamente (QuickDASH, ODI, NDI, LEFS o scala custom)
         source_mode = "external_score"
@@ -1846,6 +1900,30 @@ def record_outcome_measure(conn: sqlite3.Connection, payload: Dict[str, Any], ac
     row = row_to_dict(conn.execute("SELECT * FROM outcome_measures WHERE id = ?", (om_id,)).fetchone())
     row["responses"] = json.loads(row.get("responses_json") or "[]")
     return row
+
+
+def delete_outcome_measure(conn: sqlite3.Connection, om_id: int, actor: str = "Professionista") -> Dict[str, Any]:
+    existing = row_to_dict(conn.execute("SELECT * FROM outcome_measures WHERE id = ?", (om_id,)).fetchone())
+    if not existing:
+        raise NotFoundError("Scala di esito non trovata.")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DELETE FROM outcome_measures WHERE id = ?", (om_id,))
+        log_audit(
+            conn,
+            "DELETE_OUTCOME_MEASURE",
+            "outcome_measures",
+            om_id,
+            existing["person_id"],
+            f"Eliminata rilevazione {existing['scale_code']} ({existing['recorded_date']})",
+            actor=actor,
+        )
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    return {"deleted": True, "id": om_id}
 
 
 def save_clinical_note(

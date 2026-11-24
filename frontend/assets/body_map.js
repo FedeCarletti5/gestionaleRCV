@@ -150,18 +150,18 @@ export function renderBodySvgMarkup(viewSide, markers, comparisonMarkers = [], z
       role="img"
       aria-label="Mappa anatomica 2D ${viewTitle} con lateralità esplicita"
     >
-      <rect x="0" y="0" width="1000" height="1000" fill="var(--bg-subtle, #f4f7fb)" />
+      <rect x="0" y="0" width="1000" height="1000" fill="#f9fafb" />
       <!-- Griglia di riferimento leggera -->
-      <line x1="500" y1="30" x2="500" y2="970" stroke="var(--border-color, #d6e0ec)" stroke-width="2" stroke-dasharray="8 8" />
+      <line x1="500" y1="30" x2="500" y2="970" stroke="#e5e7eb" stroke-width="2" stroke-dasharray="8 8" />
 
       <!-- Etichette di Lateralità Anatomica Esplicita -->
-      <rect x="30" y="24" width="250" height="44" rx="8" fill="#07101f" />
-      <text x="155" y="53" text-anchor="middle" font-size="22" font-weight="800" fill="#ffffff">${leftCanvasLabel}</text>
+      <rect x="30" y="24" width="250" height="44" rx="8" fill="#1e293b" />
+      <text x="155" y="53" text-anchor="middle" font-size="22" font-weight="700" fill="#ffffff">${leftCanvasLabel}</text>
 
-      <rect x="720" y="24" width="250" height="44" rx="8" fill="#07101f" />
-      <text x="845" y="53" text-anchor="middle" font-size="22" font-weight="800" fill="#ffffff">${rightCanvasLabel}</text>
+      <rect x="720" y="24" width="250" height="44" rx="8" fill="#1e293b" />
+      <text x="845" y="53" text-anchor="middle" font-size="22" font-weight="700" fill="#ffffff">${rightCanvasLabel}</text>
 
-      <text x="500" y="52" text-anchor="middle" font-size="22" font-weight="800" fill="#0873ed">${viewTitle}</text>
+      <text x="500" y="52" text-anchor="middle" font-size="22" font-weight="700" fill="#1e4976">${viewTitle}</text>
 
       <!-- Silhouette Anatomica 2D Normalizzata -->
       <g class="body-silhouette-group">

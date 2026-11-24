@@ -43,6 +43,7 @@ from backend.services import (
     create_person,
     create_physio_episode,
     create_shared_limitation,
+    delete_outcome_measure,
     export_calendar_ics,
     find_potential_duplicates,
     get_dashboard_overview,
@@ -759,6 +760,12 @@ class GestionaleHTTPHandler(BaseHTTPRequestHandler):
             if path == "/api/physio/outcome-measures" and method == "POST":
                 om = record_outcome_measure(conn, payload, actor=actor)
                 self._send_json(201, om)
+                return
+
+            m_om = re.match(r"^/api/physio/outcome-measures/(\d+)$", path)
+            if m_om and method == "DELETE":
+                res = delete_outcome_measure(conn, int(m_om.group(1)), actor=actor)
+                self._send_json(200, res)
                 return
 
             if path == "/api/physio/notes" and method == "POST":

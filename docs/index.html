@@ -3,137 +3,152 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#07101f" />
+  <meta name="theme-color" content="#ffffff" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="GestionaleRCV" />
-  <title>GestionaleRCV — Fisioterapia &amp; Personal Training</title>
+  <title>Gestionale RCV</title>
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="icon" href="./assets/logo.png" type="image/png" />
   <link rel="apple-touch-icon" href="./assets/logo.png" />
-  <link rel="stylesheet" href="./assets/styles.css" />
+  <link rel="stylesheet" href="./assets/styles.css?v=8" />
 </head>
 <body>
-  <!-- Banner Modalità Privacy attiva -->
+  <!-- Banner Privacy (visibile solo quando attiva) -->
   <div class="privacy-banner" id="privacyBanner">
-    <span>👁️‍🗨️ MODALITÀ PRIVACY ATTIVA — Dati clinici, cognomi e importi offuscati per schermo visibile ad altri</span>
-    <button class="btn btn-sm btn-secondary" id="disablePrivacyBtn">Ripristina visibilità</button>
+    <span>Modalità privacy attiva — dati sensibili oscurati</span>
+    <button class="btn btn-sm btn-secondary" id="disablePrivacyBtn">Disattiva</button>
   </div>
 
-  <!-- Schermata di Login (visibile quando non autenticato) -->
-  <div id="loginScreen" class="modal-backdrop" style="display:none; background:radial-gradient(circle at 18% 12%, rgba(8,115,237,0.22), transparent 34rem), radial-gradient(circle at 85% 82%, rgba(12,201,176,0.18), transparent 32rem), #07101f;">
-    <div class="modal-panel" style="max-width:440px; background:#0e1a2c; border:1px solid #243c5a; color:#eaf2fb;">
-      <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
-        <img src="./assets/logo.png" alt="GestionaleRCV Logo" style="width:50px; height:50px; border-radius:13px; border:1px solid #274a73; object-fit:cover; box-shadow:0 8px 22px rgba(0,53,121,0.35);" />
+  <!-- Schermata di Login -->
+  <div id="loginScreen" class="login-screen" style="display:none;">
+    <div class="login-card">
+      <div class="login-brand">
+        <img src="./assets/logo.png" alt="Gestionale RCV" class="brand-img" />
         <div>
-          <h1 style="margin:0; font-size:19px; color:#f5f8ff; letter-spacing:0.04em;">GESTIONALE RCV</h1>
-          <div style="font-size:12px; color:#8fa1ba;">Fisioterapia &amp; Personal Training · Accesso riservato</div>
+          <h1 class="login-title">Gestionale RCV</h1>
+          <div class="login-subtitle">Fisioterapia e Personal Training</div>
         </div>
-      </div>
-      <div id="loginEnvNotice" class="badge badge-success" style="margin-bottom:14px; display:inline-flex;">
-        ☁️ Ambiente PROD · Database Cloud Supabase attivo
       </div>
       <form id="loginForm">
         <div class="form-group">
           <label class="form-label" for="loginUsername">Utente</label>
-          <input class="form-control" id="loginUsername" name="username" type="text" value="admin" autocomplete="username" required />
+          <input class="form-control" id="loginUsername" name="username" type="text" placeholder="Nome utente" autocomplete="username" required />
         </div>
         <div class="form-group">
           <label class="form-label" for="loginPassword">Password</label>
-          <input class="form-control" id="loginPassword" name="password" type="password" value="FisioFitness2026!" autocomplete="current-password" required />
+          <input class="form-control" id="loginPassword" name="password" type="password" placeholder="Password" autocomplete="current-password" required />
         </div>
         <div class="form-group" id="loginTotpGroup" style="display:none;">
-          <label class="form-label" for="loginTotp">Codice 2FA (TOTP 6 cifre o codice di recupero)</label>
-          <input class="form-control" id="loginTotp" name="totp_code" type="text" placeholder="Es. 123456" autocomplete="one-time-code" />
+          <label class="form-label" for="loginTotp">Codice 2FA</label>
+          <input class="form-control" id="loginTotp" name="totp_code" type="text" placeholder="6 cifre o codice di recupero" autocomplete="one-time-code" />
         </div>
-        <div id="loginError" style="color:#b91c1c; font-size:13px; font-weight:600; margin-bottom:10px; display:none;"></div>
-        <button type="submit" class="btn btn-primary" style="width:100%;">Accedi in sicurezza</button>
+        <div id="loginError" class="form-error" style="display:none;"></div>
+        <button type="submit" class="btn btn-primary" style="width:100%; margin-top:4px;">Accedi</button>
       </form>
     </div>
   </div>
 
-  <!-- App Shell principale -->
+  <!-- App Shell -->
   <div class="app-shell" id="appShell" style="display:none;">
-    <!-- Sidebar Desktop / iPad -->
+    <!-- Sidebar -->
     <aside class="sidebar" aria-label="Menu principale">
       <div class="sidebar-brand">
-        <img src="./assets/logo.png" alt="GestionaleRCV" style="width:40px; height:40px; border-radius:10px; object-fit:cover; flex-shrink:0;" />
-        <div>
-          <div class="brand-title">GestionaleRCV</div>
-          <div class="brand-subtitle" id="sidebarEnvBadge">Ambiente PROD</div>
-        </div>
+        <img src="./assets/logo.png" alt="Gestionale RCV" class="sidebar-logo" />
+        <span class="brand-title">Gestionale RCV</span>
       </div>
-      <ul class="nav-list">
-        <li><button class="nav-btn active" data-nav="dashboard">📋 Oggi &amp; Dashboard</button></li>
-        <li><button class="nav-btn" data-nav="agenda">📅 Agenda Unificata</button></li>
-        <li><button class="nav-btn" data-nav="people">👥 Persone (Anagrafica)</button></li>
-        <li><button class="nav-btn" data-nav="packages">🎟️ Pacchetti &amp; Incassi</button></li>
-        <li><button class="nav-btn" data-nav="security">🔒 Sicurezza, Backup &amp; GDPR</button></li>
-      </ul>
+
+      <nav class="nav-list">
+        <button class="nav-btn active" data-nav="people">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span>Persone</span>
+        </button>
+        <button class="nav-btn" data-nav="packages">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+          <span>Pacchetti</span>
+        </button>
+
+        <div class="nav-divider"></div>
+
+        <button class="nav-btn nav-btn-secondary" data-nav="agenda">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          <span>Agenda</span>
+        </button>
+        <button class="nav-btn nav-btn-secondary" data-nav="security">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span>Impostazioni</span>
+        </button>
+      </nav>
+
       <div class="sidebar-footer">
-        <div id="practitionerLabel" style="font-weight:600; color:#e2e8f0; margin-bottom:6px;">Professionista</div>
-        <div>Fuso: <strong>Europe/Rome</strong></div>
-        <button class="btn btn-sm btn-ghost" id="logoutBtn" style="width:100%; margin-top:10px; color:#cbd5e1; border-color:#334155;">Esci dalla sessione</button>
+        <div class="sidebar-user" id="practitionerLabel">Professionista</div>
+        <button class="btn-icon-text" id="logoutBtn" title="Esci">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          <span>Esci</span>
+        </button>
       </div>
     </aside>
 
-    <!-- Area Contenuto Principale -->
+    <!-- Area Contenuto -->
     <div class="main-area">
-      <!-- Topbar con ricerca globale, stato salvataggio e modalità privacy -->
       <header class="topbar">
         <div class="search-box">
-          <span class="search-icon">🔍</span>
+          <svg class="search-icon ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input
             type="search"
             id="globalSearchInput"
             class="search-input"
-            placeholder="Ricerca rapida persona (nome, tel, sport, CF)..."
-            aria-label="Ricerca rapida persona"
+            placeholder="Cerca persona..."
+            aria-label="Cerca persona"
           />
           <div id="globalSearchDropdown" class="search-dropdown" style="display:none;"></div>
         </div>
 
         <div class="topbar-actions">
-          <span id="saveStatusIndicator" class="save-status-pill saved" role="status" aria-live="polite">
-            ✓ Online · Sincronizzato
+          <span id="saveStatusIndicator" class="save-status saved" role="status" aria-live="polite">
+            <span class="status-dot"></span>
+            <span class="status-text">Sincronizzato</span>
           </span>
-          <button class="btn btn-sm btn-secondary" id="themeToggleBtn" title="Passa tra Tema Scuro (Athlete Data) e Tema Chiaro (FisioBrief)">
-            🌙 Tema Scuro
+          <button class="btn btn-sm btn-ghost" id="privacyToggleBtn" title="Oscura dati sensibili">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            <span class="hide-xs">Privacy</span>
           </button>
-          <button class="btn btn-sm btn-secondary" id="privacyToggleBtn" title="Nascondi dati sensibili quando lo schermo è visibile ad altri">
-            👁️ Oscura dati sensibili
+          <button class="btn btn-sm btn-primary" id="qaNewPersonBtn">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span>Nuova persona</span>
           </button>
         </div>
       </header>
 
-      <!-- Barra Azioni Rapide Evidenti -->
-      <div class="quick-actions-bar" role="toolbar" aria-label="Azioni rapide">
-        <button class="btn btn-sm btn-primary" id="qaNewPersonBtn">➕ Nuova Persona</button>
-        <button class="btn btn-sm btn-secondary" id="qaNewApptBtn">📅 Nuovo Appuntamento</button>
-        <button class="btn btn-sm btn-physio" id="qaNewEvalBtn">🩺 Nuova Valutazione Fisio</button>
-        <button class="btn btn-sm btn-fitness" id="qaLogSessionBtn">🏋️ Registra Seduta</button>
-        <button class="btn btn-sm btn-secondary" id="qaNewPackageBtn">🎟️ Nuovo Pacchetto</button>
-      </div>
-
-      <!-- Contenitore Vista Dinamica -->
       <main class="content-container" id="mainViewContainer"></main>
     </div>
 
-    <!-- Bottom Navigation per iPhone -->
+    <!-- Bottom Navigation Mobile -->
     <nav class="mobile-bottom-nav" aria-label="Navigazione mobile">
-      <button class="mobile-nav-btn active" data-nav="dashboard"><span>📋</span><span>Oggi</span></button>
-      <button class="mobile-nav-btn" data-nav="agenda"><span>📅</span><span>Agenda</span></button>
-      <button class="mobile-nav-btn" data-nav="people"><span>👥</span><span>Persone</span></button>
-      <button class="mobile-nav-btn" data-nav="packages"><span>🎟️</span><span>Pacchetti</span></button>
-      <button class="mobile-nav-btn" data-nav="security"><span>🔒</span><span>Sicurezza</span></button>
+      <button class="mobile-nav-btn active" data-nav="people">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span>Persone</span>
+      </button>
+      <button class="mobile-nav-btn" data-nav="packages">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+        <span>Pacchetti</span>
+      </button>
+      <button class="mobile-nav-btn" data-nav="agenda">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span>Agenda</span>
+      </button>
+      <button class="mobile-nav-btn" data-nav="security">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>Impostazioni</span>
+      </button>
     </nav>
   </div>
 
-  <!-- Contenitore Modali Operativi e Risoluzione Conflitti 409 -->
+  <!-- Modale -->
   <div id="modalContainer" class="modal-backdrop" style="display:none;">
     <div class="modal-panel" id="modalContent"></div>
   </div>
 
-  <script type="module" src="./assets/app.js?v=7"></script>
+  <script type="module" src="./assets/app.js?v=8"></script>
 </body>
 </html>

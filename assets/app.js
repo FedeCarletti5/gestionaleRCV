@@ -3,7 +3,14 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js";
+} from "./body_map.js?v=8";
+import {
+  PCS_ITEMS,
+  TSK13_ITEMS,
+  computeScaleBreakdown,
+  buildClinicalNoteFromBreakdown,
+  parseTallyScalesCsv
+} from "./scales.js?v=8";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
@@ -16,10 +23,11 @@ const state = {
   sessionToken: (typeof localStorage !== "undefined" && localStorage.getItem("gestionale_cloud_token")) || "",
   user: null,
   csrfToken: "",
-  currentNav: "dashboard",
+  currentNav: "people",
   privacyMode: false,
   selectedPersonId: null,
   selectedPersonTab: "profilo",
+  profileEditMode: false,
   selectedEpisodeId: null,
   selectedEvalId: null,
   agendaViewMode: window.innerWidth < 768 ? "iphone_list" : "week",
@@ -27,6 +35,8 @@ const state = {
   agendaAreaFilter: "tutti",
   peopleAreaFilter: "tutti",
   peopleStatusFilter: "attivo",
+  peopleLocalQuery: "",
+  peopleCache: [],
   catalogs: { outcome_scales: {}, templates: [] },
   bodyMapDraft: {
     viewSide: "anterior",
@@ -35,10 +45,37 @@ const state = {
     symptomType: "Dolore acuto",
     intensity: 5,
     zoom: { scale: 1, focus: "full" },
-    showComparison: true,
     markers: []
   }
 };
+
+// ============================================================================
+// ICONE SVG MONOCROMATICHE (ZERO EMOJI)
+// ============================================================================
+
+const ICONS = {
+  plus: `<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>`,
+  back: `<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>`,
+  edit: `<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>`,
+  trash: `<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>`,
+  upload: `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>`,
+  download: `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>`,
+  printer: `<polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>`,
+  chevronRight: `<polyline points="9 18 15 12 9 6"/>`,
+  chevronDown: `<polyline points="6 9 12 15 18 9"/>`,
+  search: `<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>`,
+  check: `<polyline points="20 6 9 17 4 12"/>`,
+  x: `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`,
+  calendar: `<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>`,
+  file: `<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>`,
+  eye: `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>`,
+  eyeOff: `<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/>`
+};
+
+function ico(name, sizeClass = "ico-sm") {
+  const path = ICONS[name] || "";
+  return `<svg class="${sizeClass}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+}
 
 // ============================================================================
 // UTILITÀ DI FORMATTAZIONE E STATO SALVATAGGIO
@@ -58,8 +95,26 @@ function formatEur(cents) {
   return `€ ${num.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function formatDateIt(isoDate) {
+  if (!isoDate) return "—";
+  const m = String(isoDate).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return String(isoDate);
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+function calcAge(birthDate) {
+  if (!birthDate) return "";
+  const m = String(birthDate).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return "";
+  const today = new Date();
+  let age = today.getFullYear() - Number(m[1]);
+  const mo = today.getMonth() + 1 - Number(m[2]);
+  if (mo < 0 || (mo === 0 && today.getDate() < Number(m[3]))) age--;
+  return age >= 0 && age < 130 ? `${age} anni` : "";
+}
+
 function formatRomeDateTime(isoStr) {
-  if (!isoStr) return "-";
+  if (!isoStr) return "—";
   try {
     const d = new Date(isoStr);
     return d.toLocaleString("it-IT", {
@@ -71,26 +126,31 @@ function formatRomeDateTime(isoStr) {
       minute: "2-digit"
     });
   } catch {
-    return isoStr.replace("T", " ").slice(0, 16);
+    return String(isoStr).replace("T", " ").slice(0, 16);
   }
 }
 
 function formatRomeTime(isoStr) {
   if (!isoStr) return "";
-  return isoStr.slice(11, 16);
+  return String(isoStr).slice(11, 16);
+}
+
+function todayRomeStr() {
+  return new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
 }
 
 function setSaveStatus(mode, text) {
   const el = document.getElementById("saveStatusIndicator");
   if (!el) return;
-  el.className = `save-status-pill ${mode}`;
-  const nowTime = new Date().toLocaleTimeString("it-IT", { timeZone: "Europe/Rome" });
+  el.className = `save-status ${mode}`;
+  const label = el.querySelector(".status-text");
+  if (!label) return;
   if (mode === "saving") {
-    el.textContent = `⏳ ${text || "Salvataggio bozza..."}`;
+    label.textContent = text || "Salvataggio...";
   } else if (mode === "saved") {
-    el.textContent = `✓ ${text || `Salvato (${nowTime})`}`;
+    label.textContent = text || "Salvato";
   } else if (mode === "error") {
-    el.textContent = `⚠️ ${text || "Errore salvataggio / Conflitto"}`;
+    label.textContent = text || "Errore";
   }
 }
 
@@ -122,7 +182,7 @@ async function apiFetch(path, options = {}) {
   }
 
   if (method !== "GET" && !options.silentStatus) {
-    setSaveStatus("saving", "Salvataggio in corso...");
+    setSaveStatus("saving", "Salvataggio...");
   }
 
   const targetUrl = state.apiBaseUrl ? `${state.apiBaseUrl}${path}` : path;
@@ -135,9 +195,9 @@ async function apiFetch(path, options = {}) {
       body,
       credentials: state.apiBaseUrl ? "omit" : "same-origin"
     });
-  } catch (networkErr) {
-    setSaveStatus("error", "Connessione assente — le modifiche locali restano nel modulo");
-    throw new Error("Impossibile contattare il server. Controlla la connessione di rete.");
+  } catch {
+    setSaveStatus("error", "Offline");
+    throw new Error("Impossibile contattare il server. Controlla la connessione.");
   }
 
   let data = null;
@@ -147,23 +207,22 @@ async function apiFetch(path, options = {}) {
   }
 
   if (resp.status === 401 && path !== "/api/auth/login" && path !== "/api/auth/status") {
-    setSaveStatus("error", "Sessione scaduta — effettua nuovamente l'accesso");
-    showLoginScreen("Sessione scaduta o non autenticata. Accedi per continuare senza perdere il lavoro.");
+    setSaveStatus("error", "Sessione scaduta");
+    showLoginScreen("Sessione scaduta. Effettua nuovamente l'accesso.");
     throw new Error("Non autenticato");
   }
 
   if (resp.status === 409 && data && data.code === "CONFLICT") {
-    setSaveStatus("error", "Conflitto di modifica concorrente rilevato (409)");
-    showConflictResolutionModal(data.error, data.server_record, options.body);
+    setSaveStatus("error", "Conflitto versione");
+    showConflictResolutionModal(data.error, data.server_record);
     const err = new Error(data.error || "Conflitto di versione");
     err.isConflict = true;
-    err.serverRecord = data.server_record;
     throw err;
   }
 
   if (!resp.ok) {
     if (method !== "GET" && !options.silentStatus) {
-      setSaveStatus("error", (data && data.error) || "Errore durante il salvataggio");
+      setSaveStatus("error", "Errore");
     }
     const err = new Error((data && data.error) || `Errore HTTP ${resp.status}`);
     err.details = (data && data.details) || {};
@@ -172,35 +231,20 @@ async function apiFetch(path, options = {}) {
   }
 
   if (method !== "GET" && !options.silentStatus) {
-    setSaveStatus("saved");
+    setSaveStatus("saved", "Salvato");
   }
   return data;
 }
 
-function showConflictResolutionModal(message, serverRecord, attemptedPayload) {
+function showConflictResolutionModal(message, serverRecord) {
   openModal(`
-    <div>
-      <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-        <span class="badge badge-danger" style="font-size:14px;">⚠️ CONFLITTO DI MODIFICA CONCORRENTE (HTTP 409)</span>
-      </div>
-      <h2 style="margin-top:0;">Modifica rilevata da un altro dispositivo</h2>
-      <p style="color:#334155;">${esc(message)}</p>
-      <p style="font-size:13px; color:#475569;">
-        Per evitare <strong>sovrascritture silenziose</strong>, il salvataggio è stato bloccato perché la versione sul server è già avanzata a <strong>v${esc(serverRecord.version)}</strong> (aggiornata il ${esc(formatRomeDateTime(serverRecord.updated_at))}).
-      </p>
-      <div class="grid-2" style="margin:14px 0;">
-        <div class="card" style="background:var(--bg-subtle); margin:0;">
-          <h4 style="margin-top:0;">Stato attuale sul Server (v${esc(serverRecord.version)})</h4>
-          <pre style="font-size:11.5px; white-space:pre-wrap; max-height:220px; overflow:auto;">${esc(JSON.stringify(serverRecord, null, 2))}</pre>
-        </div>
-        <div class="card" style="background:#fffbeb; margin:0;">
-          <h4 style="margin-top:0;">Modifiche inviate da questo dispositivo</h4>
-          <pre style="font-size:11.5px; white-space:pre-wrap; max-height:220px; overflow:auto;">${esc(JSON.stringify(attemptedPayload, null, 2))}</pre>
-        </div>
-      </div>
-      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:14px;">
-        <button class="btn btn-primary" id="conflictReloadBtn">Ricarica dati aggiornati dal server</button>
-      </div>
+    <h2 class="modal-title">Modifica da un altro dispositivo</h2>
+    <p style="color:var(--text-secondary); margin-top:0;">${esc(message)}</p>
+    <p style="font-size:13px; color:var(--text-muted);">
+      Versione attuale sul server: <strong>v${esc(serverRecord?.version)}</strong> (${esc(formatRomeDateTime(serverRecord?.updated_at))}).
+    </p>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="conflictReloadBtn">Ricarica dati aggiornati</button>
     </div>
   `);
   document.getElementById("conflictReloadBtn")?.addEventListener("click", async () => {
@@ -210,12 +254,13 @@ function showConflictResolutionModal(message, serverRecord, attemptedPayload) {
 }
 
 // ============================================================================
-// GESTIONE MODALI E NAVIGAZIONE
+// MODALI E NAVIGAZIONE
 // ============================================================================
 
-function openModal(htmlContent) {
+function openModal(htmlContent, { wide = false } = {}) {
   const backdrop = document.getElementById("modalContainer");
   const content = document.getElementById("modalContent");
+  content.className = wide ? "modal-panel modal-wide" : "modal-panel";
   content.innerHTML = htmlContent;
   backdrop.style.display = "flex";
 }
@@ -228,8 +273,13 @@ function closeModal() {
 }
 
 document.getElementById("modalContainer")?.addEventListener("click", (e) => {
-  if (e.target.id === "modalContainer") {
-    closeModal();
+  if (e.target.id === "modalContainer") closeModal();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    const backdrop = document.getElementById("modalContainer");
+    if (backdrop && backdrop.style.display !== "none") closeModal();
   }
 });
 
@@ -246,27 +296,36 @@ function showLoginScreen(errMsg = "") {
 }
 
 async function navigateTo(navKey, options = {}) {
-  state.currentNav = navKey;
+  state.currentNav = navKey === "dashboard" ? "people" : navKey;
   if (options.personId !== undefined) {
+    if (options.personId !== state.selectedPersonId) {
+      state.profileEditMode = false;
+      state.selectedEpisodeId = null;
+      state.selectedEvalId = null;
+    }
     state.selectedPersonId = options.personId;
   }
   if (options.personTab) {
-    state.selectedPersonTab = options.personTab;
+    state.selectedPersonTab = normalizePersonTab(options.personTab);
+    state.profileEditMode = false;
   }
   document.querySelectorAll("[data-nav]").forEach((btn) => {
-    btn.classList.toggle("active", btn.getAttribute("data-nav") === navKey);
+    btn.classList.toggle("active", btn.getAttribute("data-nav") === state.currentNav);
   });
   await refreshCurrentView();
+}
+
+function normalizePersonTab(tab) {
+  if (tab === "riepilogo" || tab === "anagrafica") return "profilo";
+  if (tab === "appuntamenti") return "pacchetti";
+  if (tab === "cronologia") return "documenti";
+  return tab || "profilo";
 }
 
 async function refreshCurrentView() {
   const container = document.getElementById("mainViewContainer");
   if (!container) return;
-  if (state.currentNav === "dashboard") {
-    await renderDashboardView(container);
-  } else if (state.currentNav === "agenda") {
-    await renderAgendaView(container);
-  } else if (state.currentNav === "people") {
+  if (state.currentNav === "people") {
     if (state.selectedPersonId) {
       await renderPersonDossierView(container, state.selectedPersonId);
     } else {
@@ -274,428 +333,240 @@ async function refreshCurrentView() {
     }
   } else if (state.currentNav === "packages") {
     await renderPackagesView(container);
+  } else if (state.currentNav === "agenda") {
+    await renderAgendaView(container);
   } else if (state.currentNav === "security") {
     await renderSecurityView(container);
   }
 }
 
 // ============================================================================
-// 1. VISTA DASHBOARD ("OGGI")
-// ============================================================================
-
-async function renderDashboardView(container) {
-  const data = await apiFetch(`/api/dashboard?date=${encodeURIComponent(state.agendaDate)}`);
-  const nextAppt = data.next_appointment;
-
-  const nextPersonHtml = nextAppt
-    ? `
-      <div class="card" style="border-left: 6px solid var(--primary); background: linear-gradient(135deg, var(--primary-light), var(--bg-surface));">
-        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
-          <div>
-            <span class="badge ${nextAppt.service_area === "fisio" ? "badge-physio" : "badge-fitness"}">
-              ${nextAppt.service_area === "fisio" ? "🩺 PROSSIMA SEDUTA FISIOTERAPIA" : "🏋️ PROSSIMA SEDUTA FITNESS"}
-            </span>
-            <h2 style="margin:8px 0 4px 0; font-size:21px;" class="sensitive-data">
-              ${esc(nextAppt.first_name)} ${esc(nextAppt.last_name)}
-            </h2>
-            <div style="color:var(--text-secondary); font-size:14px;">
-              🕒 <strong>${formatRomeTime(nextAppt.start_at)} – ${formatRomeTime(nextAppt.end_at)}</strong>
-              · ${esc(nextAppt.service_name)} · 📍 ${esc(nextAppt.location)}
-            </div>
-            ${nextAppt.notes ? `<div style="margin-top:6px; font-size:13px; color:var(--text-muted);" class="sensitive-data">📝 ${esc(nextAppt.notes)}</div>` : ""}
-          </div>
-          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <button class="btn btn-primary" data-open-appt-drawer="${nextAppt.id}">⚡ Gestisci Seduta / Presenza</button>
-            <button class="btn btn-secondary" data-open-person="${nextAppt.person_id}" data-person-tab="${nextAppt.service_area}">📂 Apri Scheda ${nextAppt.service_area === "fisio" ? "Fisio" : "Fitness"}</button>
-          </div>
-        </div>
-      </div>
-    `
-    : `
-      <div class="card" style="border-left: 5px solid #94a3b8;">
-        <strong>Nessun altro appuntamento in attesa per oggi (${esc(data.date)}).</strong>
-      </div>
-    `;
-
-  const todayRows = (data.today_appointments || [])
-    .map((a) => {
-      const areaBadge =
-        a.service_area === "fisio"
-          ? `<span class="badge badge-physio">🩺 Fisio</span>`
-          : `<span class="badge badge-fitness">🏋️ Fitness</span>`;
-      const stBadge = renderApptStatusBadge(a.status);
-      return `
-        <tr>
-          <td><strong>${formatRomeTime(a.start_at)} – ${formatRomeTime(a.end_at)}</strong></td>
-          <td>
-            <a href="#" data-open-person="${a.person_id}" style="font-weight:700; color:var(--primary); text-decoration:none;" class="sensitive-data">
-              ${esc(a.first_name)} ${esc(a.last_name)}
-            </a>
-          </td>
-          <td>${areaBadge} <span style="margin-left:4px;">${esc(a.service_name)}</span></td>
-          <td>${stBadge}</td>
-          <td style="text-align:right;">
-            <button class="btn btn-sm btn-secondary" data-open-appt-drawer="${a.id}">Gestisci / Svolgi</button>
-          </td>
-        </tr>
-      `;
-    })
-    .join("");
-
-  const draftsRows = (data.drafts_to_complete || [])
-    .map(
-      (d) => `
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--border-color);">
-        <div>
-          <span class="badge badge-warning">✏️ BOZZA</span>
-          <strong class="sensitive-data" style="margin-left:6px;">${esc(d.first_name)} ${esc(d.last_name)}</strong>
-          <div style="font-size:12.5px; color:#475569;" class="sensitive-data">${esc(d.kind)} · ${esc(d.episode_title)} (${esc(d.date)})</div>
-        </div>
-        <button class="btn btn-sm btn-secondary" data-open-person="${d.person_id}" data-person-tab="fisio">Completa</button>
-      </div>
-    `
-    )
-    .join("");
-
-  const reassessRows = (data.reassessments_due || [])
-    .map(
-      (r) => `
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--border-color);">
-        <div>
-          <span class="badge badge-physio">🔄 RIVALUTAZIONE</span>
-          <strong class="sensitive-data" style="margin-left:6px;">${esc(r.first_name)} ${esc(r.last_name)}</strong>
-          <div style="font-size:12.5px; color:#475569;" class="sensitive-data">${esc(r.title)} · Prevista: <strong>${esc(r.reassessment_due_date)}</strong></div>
-        </div>
-        <button class="btn btn-sm btn-physio" data-open-person="${r.person_id}" data-person-tab="fisio">Rivaluta</button>
-      </div>
-    `
-    )
-    .join("");
-
-  const lowPkgRows = (data.low_or_expiring_packages || [])
-    .map(
-      (p) => `
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--border-color);">
-        <div>
-          <strong class="sensitive-data">${esc(p.first_name)} ${esc(p.last_name)}</strong> — ${esc(p.name)}
-          <div style="font-size:12.5px; color:#475569;">
-            Residue: <strong>${p.remaining_sessions}/${p.total_sessions}</strong> (Disponibili: <strong>${p.available_to_book}</strong>, Prenotate: ${p.reserved_sessions})
-            ${p.valid_until ? ` · Scad: ${esc(p.valid_until)}` : ""}
-          </div>
-        </div>
-        <button class="btn btn-sm btn-secondary" data-open-person="${p.person_id}" data-person-tab="pacchetti">Apri</button>
-      </div>
-    `
-    )
-    .join("");
-
-  const unpaidRows = (data.unpaid_packages || [])
-    .map(
-      (p) => `
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--border-color);">
-        <div>
-          <strong class="sensitive-data">${esc(p.first_name)} ${esc(p.last_name)}</strong> — ${esc(p.name)}
-          <div style="font-size:12.5px; color:#b91c1c; font-weight:600;" class="sensitive-data">
-            Da incassare: ${formatEur(p.due_cents)} (Pagato: ${formatEur(p.paid_cents)} su ${formatEur(p.price_cents)})
-          </div>
-        </div>
-        <button class="btn btn-sm btn-primary" data-record-payment-pkg="${p.id}" data-person-id="${p.person_id}" data-due-cents="${p.due_cents}">💶 Incassa</button>
-      </div>
-    `
-    )
-    .join("");
-
-  container.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
-      <div>
-        <h1 style="margin:0; font-size:22px;">Oggi in Studio</h1>
-        <div style="font-size:13px; color:#64748b;">Data selezionata: <strong>${esc(data.date)}</strong> · Fuso: Europe/Rome</div>
-      </div>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <input type="date" class="form-control" id="dashDateInput" value="${esc(data.date)}" style="width:auto;" />
-        <button class="btn btn-sm btn-secondary" id="dashTodayBtn">Oggi</button>
-      </div>
-    </div>
-
-    ${nextPersonHtml}
-
-    <div class="grid-4" style="margin-bottom:16px;">
-      <div class="stat-card">
-        <div class="stat-label">Appuntamenti Oggi</div>
-        <div class="stat-value">${data.today_appointments.length}</div>
-        <div class="stat-sub">Fisio &amp; Personal Training</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Note in Bozza</div>
-        <div class="stat-value">${data.drafts_to_complete.length}</div>
-        <div class="stat-sub">Valutazioni e SOAP da chiudere</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Rivalutazioni Previste</div>
-        <div class="stat-value">${data.reassessments_due.length}</div>
-        <div class="stat-sub">Entro i prossimi 7 giorni</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Importi da Incassare</div>
-        <div class="stat-value sensitive-data" style="color:var(--danger);">${formatEur(data.total_to_collect_cents)}</div>
-        <div class="stat-sub">${data.unpaid_packages.length} pacchetti non saldati</div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header">
-        <h3 class="card-title">📅 Appuntamenti del Giorno (${esc(data.date)})</h3>
-        <button class="btn btn-sm btn-primary" id="dashNewApptBtn">➕ Nuovo Appuntamento</button>
-      </div>
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr><th>Orario</th><th>Persona</th><th>Servizio</th><th>Stato</th><th style="text-align:right;">Azione</th></tr>
-          </thead>
-          <tbody>
-            ${todayRows || '<tr><td colspan="5" style="text-align:center; color:#64748b;">Nessun appuntamento registrato per questa data.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header"><h3 class="card-title">✏️ Note e Valutazioni in Bozza da Completare</h3></div>
-        ${draftsRows || '<div style="color:#64748b; font-size:13.5px;">Tutte le note cliniche sono state finalizzate.</div>'}
-      </div>
-      <div class="card">
-        <div class="card-header"><h3 class="card-title">🔄 Rivalutazioni Cliniche in Scadenza</h3></div>
-        ${reassessRows || '<div style="color:#64748b; font-size:13.5px;">Nessuna rivalutazione in scadenza nei prossimi 7 giorni.</div>'}
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header"><h3 class="card-title">🎟️ Pacchetti Quasi Esauriti (≤ 2 sedute) o in Scadenza</h3></div>
-        ${lowPkgRows || '<div style="color:#64748b; font-size:13.5px;">Nessun pacchetto in esaurimento.</div>'}
-      </div>
-      <div class="card">
-        <div class="card-header"><h3 class="card-title">💶 Importi da Incassare</h3></div>
-        ${unpaidRows || '<div style="color:#64748b; font-size:13.5px;">Nessun insoluto aperto.</div>'}
-      </div>
-    </div>
-  `;
-
-  document.getElementById("dashDateInput")?.addEventListener("change", async (e) => {
-    state.agendaDate = e.target.value;
-    await renderDashboardView(container);
-  });
-  document.getElementById("dashTodayBtn")?.addEventListener("click", async () => {
-    state.agendaDate = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
-    await renderDashboardView(container);
-  });
-  document.getElementById("dashNewApptBtn")?.addEventListener("click", () => showNewAppointmentModal());
-  bindCommonActionButtons(container);
-}
-
-function renderApptStatusBadge(status) {
-  const map = {
-    prenotato: { cls: "badge-neutral", icon: "🕒", label: "Prenotato (Riserva seduta)" },
-    confermato: { cls: "badge-physio", icon: "✓", label: "Confermato (Riserva seduta)" },
-    svolto: { cls: "badge-success", icon: "✔", label: "Svolto (Seduta consumata)" },
-    annullato: { cls: "badge-warning", icon: "✖", label: "Annullato" },
-    assente: { cls: "badge-danger", icon: "⚠", label: "Assente" }
-  };
-  const info = map[status] || { cls: "badge-neutral", icon: "•", label: status };
-  return `<span class="badge ${info.cls}">${info.icon} ${esc(info.label)}</span>`;
-}
-
-// ============================================================================
-// 2. LISTA PERSONE (ANAGRAFICA UNICA CON FILTRI FISIO / FITNESS / ENTRAMBI)
+// 1. LISTA PERSONE (HOME PRINCIPALE)
 // ============================================================================
 
 async function renderPeopleListView(container) {
   const data = await apiFetch(
     `/api/people?area=${encodeURIComponent(state.peopleAreaFilter)}&status=${encodeURIComponent(state.peopleStatusFilter)}`
   );
-  const people = data.people || [];
+  state.peopleCache = data.people || [];
 
-  const rowsHtml = people
-    .map((p) => {
-      const badges = [];
-      if (p.physio_active && p.fitness_active) {
-        badges.push(`<span class="badge badge-success">🔗 Entrambi (Fisio + Fitness)</span>`);
-      } else if (p.physio_active) {
-        badges.push(`<span class="badge badge-physio">🩺 Paziente Fisio</span>`);
-      } else if (p.fitness_active) {
-        badges.push(`<span class="badge badge-fitness">🏋️ Cliente Fitness</span>`);
-      } else {
-        badges.push(`<span class="badge badge-neutral">Nessun percorso attivo</span>`);
-      }
-      return `
-        <tr>
-          <td>
-            <a href="#" data-open-person="${p.id}" style="font-weight:700; font-size:15px; color:var(--primary); text-decoration:none;" class="sensitive-data">
-              ${esc(p.last_name)} ${esc(p.first_name)}
-            </a>
-            ${p.is_fictitious ? `<span class="badge badge-neutral" style="margin-left:6px; font-size:10px;">DATO FITTIZIO</span>` : ""}
-          </td>
-          <td class="sensitive-data">${esc(p.birth_date || "-")}</td>
-          <td class="sensitive-data">${esc(p.phone || "-")}<br><span style="font-size:12px; color:#64748b;">${esc(p.email || "")}</span></td>
-          <td>${badges.join(" ")}</td>
-          <td>${esc(p.sport_activity || "-")}</td>
-          <td><span class="badge ${p.status === "attivo" ? "badge-success" : "badge-neutral"}">${esc(p.status)}</span></td>
-          <td style="text-align:right;">
-            <button class="btn btn-sm btn-primary" data-open-person="${p.id}">Apri Scheda</button>
-          </td>
-        </tr>
-      `;
-    })
-    .join("");
+  const areaButtons = [
+    { id: "tutti", label: "Tutti" },
+    { id: "con_fisio", label: "Fisio" },
+    { id: "con_fitness", label: "PT" },
+    { id: "entrambi", label: "Entrambi" }
+  ];
 
   container.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
-      <div>
-        <h1 style="margin:0; font-size:22px;">Anagrafica Unica Persone</h1>
-        <div style="font-size:13px; color:#64748b;">Principio: una sola persona può avere percorsi Fisio, Fitness o entrambi contemporaneamente senza duplicazioni.</div>
-      </div>
-      <button class="btn btn-primary" id="newPersonTopBtn">➕ Nuova Persona</button>
+    <div class="page-header">
+      <h1 class="page-title">
+        Persone
+        <span class="count-pill num" id="peopleCountPill">${state.peopleCache.length}</span>
+      </h1>
+      <button class="btn btn-primary" id="newPersonTopBtn">${ico("plus")} <span>Nuova persona</span></button>
     </div>
 
-    <div class="card">
-      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
-        <div>
-          <label class="form-label" style="margin-bottom:2px;">Filtro Percorso</label>
-          <select class="form-control" id="peopleAreaSelect" style="min-width:210px;">
-            <option value="tutti" ${state.peopleAreaFilter === "tutti" ? "selected" : ""}>Tutti i profili</option>
-            <option value="entrambi" ${state.peopleAreaFilter === "entrambi" ? "selected" : ""}>Entrambi (Fisio + Fitness)</option>
-            <option value="fisio" ${state.peopleAreaFilter === "fisio" ? "selected" : ""}>Solo Pazienti Fisio</option>
-            <option value="fitness" ${state.peopleAreaFilter === "fitness" ? "selected" : ""}>Solo Clienti Fitness</option>
-            <option value="con_fisio" ${state.peopleAreaFilter === "con_fisio" ? "selected" : ""}>Tutti con Fisio attivo</option>
-            <option value="con_fitness" ${state.peopleAreaFilter === "con_fitness" ? "selected" : ""}>Tutti con Fitness attivo</option>
-          </select>
+    <div class="card card-flush">
+      <div class="toolbar">
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; flex:1;">
+          <div class="segmented" role="group" aria-label="Filtro percorso">
+            ${areaButtons
+              .map(
+                (b) =>
+                  `<button class="seg-btn ${state.peopleAreaFilter === b.id ? "active" : ""}" data-area-filter="${b.id}">${b.label}</button>`
+              )
+              .join("")}
+          </div>
+          <input
+            type="search"
+            id="peopleInlineFilter"
+            class="form-control form-control-sm"
+            placeholder="Filtra per nome, sport, obiettivo..."
+            value="${esc(state.peopleLocalQuery)}"
+            style="max-width:260px;"
+          />
         </div>
-        <div>
-          <label class="form-label" style="margin-bottom:2px;">Stato Anagrafica</label>
-          <select class="form-control" id="peopleStatusSelect" style="min-width:160px;">
-            <option value="attivo" ${state.peopleStatusFilter === "attivo" ? "selected" : ""}>Attivi</option>
-            <option value="archiviato" ${state.peopleStatusFilter === "archiviato" ? "selected" : ""}>Archiviati</option>
-            <option value="tutti" ${state.peopleStatusFilter === "tutti" ? "selected" : ""}>Tutti</option>
-          </select>
-        </div>
+        <select class="form-control form-control-sm" id="peopleStatusSelect" style="width:auto;">
+          <option value="attivo" ${state.peopleStatusFilter === "attivo" ? "selected" : ""}>Attivi</option>
+          <option value="archiviato" ${state.peopleStatusFilter === "archiviato" ? "selected" : ""}>Archiviati</option>
+          <option value="tutti" ${state.peopleStatusFilter === "tutti" ? "selected" : ""}>Tutti</option>
+        </select>
       </div>
 
       <div class="table-wrap">
         <table class="data-table">
           <thead>
             <tr>
-              <th>Cognome e Nome</th>
-              <th>Nascita</th>
+              <th>Nome</th>
+              <th>Percorso</th>
+              <th>Obiettivo / Attività</th>
               <th>Contatti</th>
-              <th>Percorsi Attivi</th>
-              <th>Sport / Attività</th>
-              <th>Stato</th>
-              <th style="text-align:right;">Scheda</th>
+              <th style="width:36px;"></th>
             </tr>
           </thead>
-          <tbody>
-            ${rowsHtml || '<tr><td colspan="7" style="text-align:center; color:#64748b;">Nessuna persona trovata con i filtri selezionati.</td></tr>'}
-          </tbody>
+          <tbody id="peopleTableBody"></tbody>
         </table>
       </div>
     </div>
   `;
 
-  document.getElementById("peopleAreaSelect")?.addEventListener("change", async (e) => {
-    state.peopleAreaFilter = e.target.value;
-    await renderPeopleListView(container);
+  const paintRows = () => {
+    const q = (state.peopleLocalQuery || "").trim().toLowerCase();
+    const list = q
+      ? state.peopleCache.filter((p) => {
+          const hay = `${p.first_name} ${p.last_name} ${p.sport_activity || ""} ${p.goals || ""} ${p.phone || ""} ${p.email || ""}`.toLowerCase();
+          return hay.includes(q);
+        })
+      : state.peopleCache;
+
+    const pill = document.getElementById("peopleCountPill");
+    if (pill) pill.textContent = String(list.length);
+
+    const tbody = document.getElementById("peopleTableBody");
+    if (!tbody) return;
+    if (!list.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty-state">Nessuna persona trovata.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = list
+      .map((p) => {
+        const age = calcAge(p.birth_date);
+        const tags = [];
+        if (p.physio_active) tags.push(`<span class="tag tag-accent">Fisio</span>`);
+        if (p.fitness_active) tags.push(`<span class="tag">PT</span>`);
+        if (!tags.length) tags.push(`<span class="tag">—</span>`);
+        if (p.status === "archiviato") tags.push(`<span class="tag tag-warning">Archiviato</span>`);
+
+        const summaryText = p.goals || p.sport_activity || "—";
+        const contactLine = p.phone || p.email || "—";
+
+        return `
+          <tr class="clickable-row" data-open-person="${p.id}">
+            <td>
+              <div style="font-weight:600; color:var(--text);" class="sensitive-data">${esc(p.last_name)} ${esc(p.first_name)}</div>
+              ${age ? `<div style="font-size:12px; color:var(--text-muted);" class="sensitive-data">${esc(age)}</div>` : ""}
+            </td>
+            <td><div style="display:flex; gap:4px; flex-wrap:wrap;">${tags.join("")}</div></td>
+            <td style="max-width:340px;">
+              <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-secondary);" class="sensitive-data" title="${esc(summaryText)}">
+                ${esc(summaryText)}
+              </div>
+            </td>
+            <td style="color:var(--text-muted); font-size:13px;" class="sensitive-data">${esc(contactLine)}</td>
+            <td style="color:var(--text-muted); text-align:right;">${ico("chevronRight")}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    tbody.querySelectorAll("[data-open-person]").forEach((row) => {
+      row.addEventListener("click", async () => {
+        const pid = Number(row.getAttribute("data-open-person"));
+        await navigateTo("people", { personId: pid, personTab: "profilo" });
+      });
+    });
+  };
+
+  paintRows();
+
+  document.getElementById("peopleInlineFilter")?.addEventListener("input", (e) => {
+    state.peopleLocalQuery = e.target.value;
+    paintRows();
   });
+
+  container.querySelectorAll("[data-area-filter]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      state.peopleAreaFilter = btn.getAttribute("data-area-filter");
+      await renderPeopleListView(container);
+    });
+  });
+
   document.getElementById("peopleStatusSelect")?.addEventListener("change", async (e) => {
     state.peopleStatusFilter = e.target.value;
     await renderPeopleListView(container);
   });
+
   document.getElementById("newPersonTopBtn")?.addEventListener("click", () => showNewPersonModal());
-  bindCommonActionButtons(container);
 }
 
 // ============================================================================
-// 3. SCHEDA PERSONALE COMPLETA (8 TAB DISTINTI)
+// 2. SCHEDA PERSONA
 // ============================================================================
 
 async function renderPersonDossierView(container, personId) {
   const dossier = await apiFetch(`/api/people/${personId}`);
   const p = dossier.person;
-  const sum = dossier.summary;
+  const sum = dossier.summary || {};
 
-  // Normalizza eventuali tab legacy
-  if (state.selectedPersonTab === "riepilogo" || state.selectedPersonTab === "anagrafica") {
-    state.selectedPersonTab = "profilo";
-  } else if (state.selectedPersonTab === "pacchetti") {
-    state.selectedPersonTab = "appuntamenti";
-  } else if (state.selectedPersonTab === "cronologia") {
-    state.selectedPersonTab = "documenti";
-  }
+  state.selectedPersonTab = normalizePersonTab(state.selectedPersonTab);
+
+  const totalScalesCount = (dossier.physio.episodes || []).reduce(
+    (acc, ep) => acc + (ep.outcome_measures ? ep.outcome_measures.length : 0),
+    0
+  );
 
   const tabs = [
-    { id: "profilo", label: "👤 1. Profilo & Anamnesi" },
-    { id: "fisio", label: `🩺 2. Fisio (${dossier.physio.episodes.length})` },
-    { id: "fitness", label: `🏋️ 3. PT & Fitness (${dossier.fitness.programs.length})` },
-    { id: "appuntamenti", label: `📅 4. Appuntamenti & Pacchetti (${dossier.appointments.length} · ${dossier.packages.length})` },
-    { id: "documenti", label: `📎 5. Documenti & Cronologia (${dossier.attachments.length})` }
+    { id: "profilo", label: "Profilo", count: null },
+    { id: "fisio", label: "Fisio & Scale", count: totalScalesCount || dossier.physio.episodes.length || null },
+    { id: "fitness", label: "PT & Fitness", count: dossier.fitness.programs.length || null },
+    { id: "pacchetti", label: "Pacchetti", count: dossier.packages.length || null },
+    { id: "documenti", label: "Documenti", count: dossier.attachments.length + dossier.consents.length || null }
   ];
 
-  const tabsHtml = tabs
-    .map(
-      (t) =>
-        `<button class="tab-btn ${state.selectedPersonTab === t.id ? "active" : ""}" data-person-subtab="${t.id}">${t.label}</button>`
-    )
-    .join("");
-
-  const heightStr = p.height_cm ? `${p.height_cm} cm` : "-";
-  const weightStr = p.weight_kg !== null && p.weight_kg !== undefined && p.weight_kg !== ""
-    ? `${p.weight_kg} kg${p.weight_updated_at ? ` (${p.weight_updated_at})` : ""}`
-    : "-";
+  const age = calcAge(p.birth_date);
+  const metaParts = [];
+  if (p.birth_date) metaParts.push(`${formatDateIt(p.birth_date)}${age ? ` (${age})` : ""}`);
+  if (p.gender) metaParts.push(p.gender);
+  if (p.height_cm) metaParts.push(`${p.height_cm} cm`);
+  if (p.weight_kg !== null && p.weight_kg !== undefined && p.weight_kg !== "") metaParts.push(`${p.weight_kg} kg`);
+  if (p.phone) metaParts.push(p.phone);
 
   container.innerHTML = `
-    <div style="margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-      <button class="btn btn-sm btn-secondary" id="backToPeopleListBtn">← Torna alla lista persone</button>
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <a class="btn btn-sm btn-secondary" href="${esc(buildAuthUrl(`/api/people/${p.id}/export-pdf`))}" target="_blank">🖨️ Scheda PDF / Stampa</a>
-        <a class="btn btn-sm btn-secondary" href="${esc(buildAuthUrl(`/api/people/${p.id}/export.json`))}" target="_blank">⬇️ Esporta Dati JSON</a>
-        <button class="btn btn-sm btn-danger" id="deletePersonBtn">🗑️ Elimina Anagrafica</button>
+    <div class="dossier-top">
+      <button class="btn btn-sm btn-ghost" id="backToPeopleListBtn">${ico("back")} <span>Persone</span></button>
+      <div style="display:flex; gap:4px; flex-wrap:wrap;">
+        <a class="btn btn-sm btn-ghost" href="${esc(buildAuthUrl(`/api/people/${p.id}/export-pdf`))}" target="_blank">${ico("printer")} <span>PDF</span></a>
+        <a class="btn btn-sm btn-ghost" href="${esc(buildAuthUrl(`/api/people/${p.id}/export.json`))}" target="_blank">${ico("download")} <span>JSON</span></a>
+        <button class="btn btn-sm btn-danger-ghost" id="deletePersonBtn">${ico("trash")} <span>Elimina</span></button>
       </div>
     </div>
 
-    <div class="card" style="background:linear-gradient(135deg, #07101f, #102544); border:1px solid #274a73; color:#ffffff;">
-      <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:14px;">
-        <div>
-          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <h1 style="margin:0; font-size:23px; color:#fff;" class="sensitive-data">${esc(p.first_name)} ${esc(p.last_name)}</h1>
-            ${p.physio_active ? `<span class="badge badge-physio">🩺 Fisio</span>` : ""}
-            ${p.fitness_active ? `<span class="badge badge-fitness">🏋️ PT / Fitness</span>` : ""}
-            <span class="badge ${p.status === "attivo" ? "badge-success" : "badge-neutral"}">${esc(p.status.toUpperCase())}</span>
-          </div>
-          <div style="font-size:13.5px; color:#cbd5e1; margin-top:6px;" class="sensitive-data">
-            🎂 Nascita: <strong>${esc(p.birth_date || "-")}</strong>
-            ${p.gender ? ` · ${esc(p.gender)}` : ""}
-            · 📏 Altezza: <strong>${esc(heightStr)}</strong>
-            · ⚖️ Peso: <strong>${esc(weightStr)}</strong>
-            · 📞 Tel: <strong>${esc(p.phone || "-")}</strong>
-          </div>
-          ${
-            p.sport_activity || p.goals
-              ? `<div style="font-size:12.5px; color:#94a3b8; margin-top:4px;" class="sensitive-data">
-                  ${p.sport_activity ? `🏃 Sport: <strong style="color:#e2e8f0;">${esc(p.sport_activity)}</strong>` : ""}
-                  ${p.sport_activity && p.goals ? " · " : ""}
-                  ${p.goals ? `🎯 Obiettivo: <strong style="color:#e2e8f0;">${esc(p.goals)}</strong>` : ""}
-                </div>`
-              : ""
-          }
+    <div class="dossier-header">
+      <div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <h1 class="dossier-name sensitive-data">${esc(p.first_name)} ${esc(p.last_name)}</h1>
+          ${p.physio_active ? `<span class="tag tag-accent">Fisio</span>` : ""}
+          ${p.fitness_active ? `<span class="tag">PT</span>` : ""}
+          ${p.status === "archiviato" ? `<span class="tag tag-warning">Archiviato</span>` : ""}
         </div>
-        <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          <button class="btn btn-sm btn-primary" id="dossierNewApptBtn">📅 Prenota Seduta</button>
-        </div>
+        ${metaParts.length ? `<div class="dossier-meta sensitive-data">${esc(metaParts.join(" · "))}</div>` : ""}
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        ${
+          sum.total_due_cents > 0
+            ? `<span class="tag tag-danger num sensitive-data">Da incassare: ${formatEur(sum.total_due_cents)}</span>`
+            : ""
+        }
+        ${
+          sum.total_remaining_sessions > 0
+            ? `<span class="tag num">${sum.total_remaining_sessions} sedute residue</span>`
+            : ""
+        }
       </div>
     </div>
 
     <div class="tabs-bar" role="tablist">
-      ${tabsHtml}
+      ${tabs
+        .map(
+          (t) => `
+          <button class="tab-btn ${state.selectedPersonTab === t.id ? "active" : ""}" data-person-subtab="${t.id}">
+            <span>${t.label}</span>
+            ${t.count ? `<span class="tab-count num">${t.count}</span>` : ""}
+          </button>
+        `
+        )
+        .join("")}
     </div>
 
     <div id="personSubtabViewport"></div>
@@ -703,26 +574,22 @@ async function renderPersonDossierView(container, personId) {
 
   document.getElementById("backToPeopleListBtn")?.addEventListener("click", async () => {
     state.selectedPersonId = null;
+    state.profileEditMode = false;
     await renderPeopleListView(container);
   });
+
   document.getElementById("deletePersonBtn")?.addEventListener("click", async () => {
     const fullName = `${p.first_name || ""} ${p.last_name || ""}`.trim();
-    if (
-      !window.confirm(
-        `Eliminare definitivamente l'anagrafica di ${fullName}?\n\nQuesta azione rimuoverà anche appuntamenti, valutazioni, programmi, pacchetti e allegati collegati.`
-      )
-    ) {
-      return;
-    }
+    if (!window.confirm(`Eliminare definitivamente l'anagrafica di ${fullName} e tutti i dati collegati?`)) return;
     await apiFetch(`/api/people/${p.id}`, { method: "DELETE" });
     state.selectedPersonId = null;
     await renderPeopleListView(container);
   });
-  document.getElementById("dossierNewApptBtn")?.addEventListener("click", () => showNewAppointmentModal(p.id));
 
   container.querySelectorAll("[data-person-subtab]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       state.selectedPersonTab = btn.getAttribute("data-person-subtab");
+      state.profileEditMode = false;
       await renderPersonDossierView(container, p.id);
     });
   });
@@ -734,187 +601,135 @@ async function renderPersonDossierView(container, personId) {
     renderPersonTabFisio(subViewport, dossier);
   } else if (state.selectedPersonTab === "fitness") {
     renderPersonTabFitness(subViewport, dossier);
-  } else if (state.selectedPersonTab === "appuntamenti") {
-    subViewport.innerHTML = `<div id="subApptsWrap"></div><div id="subPacksWrap" style="margin-top:16px;"></div>`;
-    renderPersonTabAppuntamenti(document.getElementById("subApptsWrap"), dossier);
-    renderPersonTabPacchetti(document.getElementById("subPacksWrap"), dossier);
+  } else if (state.selectedPersonTab === "pacchetti") {
+    renderPersonTabPacchettiAndAppts(subViewport, dossier);
   } else if (state.selectedPersonTab === "documenti") {
-    subViewport.innerHTML = `<div id="subDocsWrap"></div><div id="subHistWrap" style="margin-top:16px;"></div>`;
-    renderPersonTabDocumenti(document.getElementById("subDocsWrap"), dossier);
-    renderPersonTabCronologia(document.getElementById("subHistWrap"), dossier);
+    renderPersonTabDocumenti(subViewport, dossier);
   }
 }
 
-// --- TAB 1: RIEPILOGO ---
-function renderPersonTabRiepilogo(viewport, dossier) {
-  const p = dossier.person;
-  const sum = dossier.summary;
-  const lims = (dossier.shared_limitations || []).filter((l) => l.is_active);
+// ============================================================================
+// TAB 1: PROFILO (SOLA LETTURA DI DEFAULT + MODIFICA SU RICHIESTA)
+// ============================================================================
 
-  const limsHtml = lims
-    .map(
-      (l) => `
-      <div style="padding:10px; background:#fffbeb; border-left:4px solid #d97706; border-radius:6px; margin-bottom:8px;">
-        <div style="font-weight:700; color:#92400e;">⚠️ ${esc(l.title)} (${esc(l.body_region || "Generale")} · Lato: ${esc(l.laterality)})</div>
-        <div style="font-size:13.5px; color:#1e293b; margin-top:4px;" class="sensitive-data">${esc(l.description)}</div>
-        <div style="font-size:11.5px; color:#64748b; margin-top:4px;">
-          📌 <strong>Fonte:</strong> ${esc(l.source_type)} (${esc(l.source_reference || "-")}) · <strong>Data:</strong> ${esc(l.recorded_date)} · <strong>Autore:</strong> ${esc(l.recorded_by)}
-        </div>
-      </div>
-    `
-    )
-    .join("");
-
-  viewport.innerHTML = `
-    <div class="grid-4" style="margin-bottom:16px;">
-      <div class="stat-card">
-        <div class="stat-label">Episodi Fisio Attivi</div>
-        <div class="stat-value">${sum.active_physio_episodes}</div>
-        <div class="stat-sub">Storico totale: ${dossier.physio.episodes.length}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Programmi Fitness Attivi</div>
-        <div class="stat-value">${sum.active_fitness_programs}</div>
-        <div class="stat-sub">Sedute registrate: ${dossier.fitness.workout_logs.length}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Sedute Disponibili</div>
-        <div class="stat-value">${sum.total_available_sessions}</div>
-        <div class="stat-sub">Al netto delle prenotazioni riservate</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Saldo Economico da Incassare</div>
-        <div class="stat-value sensitive-data" style="color:${sum.total_due_cents > 0 ? "var(--danger)" : "var(--success)"};">
-          ${formatEur(sum.total_due_cents)}
-        </div>
-        <div class="stat-sub">Distinto dal saldo sedute</div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header">
-        <h3 class="card-title">🔗 Limitazioni Rilevanti Condivise (Ponte Controllato Fisio ↔ Fitness)</h3>
-        <button class="btn btn-sm btn-secondary" id="addSharedLimBtn">➕ Aggiungi Limitazione Condivisa</button>
-      </div>
-      <p style="font-size:12.5px; color:#475569; margin-top:0;">
-        Le limitazioni qui elencate vengono richiamate nella scheda Fitness mantenendo fonte e data, <strong>senza copiare indiscriminatamente la cartella clinica</strong>.
-      </p>
-      ${limsHtml || '<div style="color:#64748b; font-size:13.5px;">Nessuna limitazione attiva condivisa tra Fisio e Fitness.</div>'}
-    </div>
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">🩺 Sintesi Area Fisioterapia</h3>
-          <button class="btn btn-sm btn-physio" data-switch-tab="fisio">Vai all'Area Fisio →</button>
-        </div>
-        ${
-          dossier.physio.episodes.length
-            ? dossier.physio.episodes
-                .map(
-                  (ep) => `
-                <div style="padding:8px 0; border-bottom:1px solid var(--border-color);">
-                  <strong>${esc(ep.title)}</strong> <span class="badge badge-physio">${esc(ep.status)}</span>
-                  <div style="font-size:12.5px; color:#475569;">Inizio: ${esc(ep.start_date)} · Valutazioni: ${ep.evaluations.length} · Note SOAP: ${ep.notes.length}</div>
-                </div>
-              `
-                )
-                .join("")
-            : '<div style="color:#64748b;">Nessun episodio fisioterapico presente.</div>'
-        }
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">🏋️ Sintesi Area Fitness</h3>
-          <button class="btn btn-sm btn-fitness" data-switch-tab="fitness">Vai all'Area Fitness →</button>
-        </div>
-        ${
-          dossier.fitness.programs.length
-            ? dossier.fitness.programs
-                .map(
-                  (fp) => `
-                <div style="padding:8px 0; border-bottom:1px solid var(--border-color);">
-                  <strong>${esc(fp.title)}</strong> <span class="badge badge-fitness">v${fp.version} · ${esc(fp.status)}</span>
-                  <div style="font-size:12.5px; color:#475569;">Obiettivo: ${esc(fp.goal)} · Frequenza: ${fp.frequency_per_week}x/sett</div>
-                </div>
-              `
-                )
-                .join("")
-            : '<div style="color:#64748b;">Nessun programma fitness presente.</div>'
-        }
-      </div>
-    </div>
-  `;
-
-  document.getElementById("addSharedLimBtn")?.addEventListener("click", () => showAddSharedLimitationModal(p.id, dossier.physio.episodes));
-  viewport.querySelectorAll("[data-switch-tab]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      state.selectedPersonTab = btn.getAttribute("data-switch-tab");
-      await refreshCurrentView();
-    });
-  });
-}
-
-// --- TAB 1: PROFILO UNICO (ANAGRAFICA, MISURE, ANAMNESI E OBIETTIVI) ---
 function renderPersonTabProfilo(viewport, dossier) {
   const p = dossier.person;
-  const sum = dossier.summary || {};
   const lims = (dossier.shared_limitations || []).filter((l) => l.is_active);
 
-  const nextApptText = sum.next_appointment
-    ? `${formatRomeDateTime(sum.next_appointment.start_at)} (${sum.next_appointment.session_type})`
-    : "Nessuna prenotata";
-
-  const activeLimsHtml = lims.length
+  const limsStrip = lims.length
     ? `
-      <div class="card" style="border-left:4px solid #d97706; margin-bottom:14px;">
-        <div class="card-header" style="margin-bottom:8px;">
-          <h3 class="card-title" style="color:#b45309;">⚠️ Limitazioni / Attenzioni Cliniche Condivise (${lims.length})</h3>
-          <button class="btn btn-sm btn-secondary" id="addSharedLimFromProfileBtn">➕ Aggiungi Limitazione</button>
+      <div class="notice-strip">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
+          <strong style="font-size:13px; color:var(--warning);">Limitazioni attive (${lims.length})</strong>
+          <button class="btn btn-xs btn-secondary" id="addSharedLimBtn">${ico("plus")} Aggiungi</button>
         </div>
         ${lims
           .map(
             (l) => `
-          <div style="padding:8px 10px; background:var(--bg-subtle); border-radius:6px; margin-bottom:6px; font-size:13px;">
-            <strong>${esc(l.title)}</strong> (${esc(l.body_region || "Generale")} · Lato: ${esc(l.laterality || "N/A")}) —
-            <span class="sensitive-data">${esc(l.description)}</span>
-          </div>`
+            <div style="font-size:13px; margin-top:4px;" class="sensitive-data">
+              <strong>${esc(l.title)}</strong>${l.body_region ? ` (${esc(l.body_region)} ${esc(l.laterality || "")})` : ""} — ${esc(l.description)}
+            </div>`
           )
           .join("")}
       </div>
     `
     : "";
 
+  if (!state.profileEditMode) {
+    const val = (v) => (v !== null && v !== undefined && String(v).trim() !== "" ? esc(v) : `<span style="color:var(--text-muted);">—</span>`);
+    const weightStr =
+      p.weight_kg !== null && p.weight_kg !== undefined && p.weight_kg !== ""
+        ? `${p.weight_kg} kg${p.weight_updated_at ? ` (${formatDateIt(p.weight_updated_at)})` : ""}`
+        : "";
+
+    viewport.innerHTML = `
+      ${limsStrip}
+
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:12px;">
+        ${!lims.length ? `<button class="btn btn-sm btn-secondary" id="addSharedLimBtn">${ico("plus")} Limitazione</button>` : ""}
+        <button class="btn btn-sm btn-secondary" id="enterProfileEditBtn">${ico("edit")} Modifica profilo</button>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header"><h3 class="card-title">Anamnesi e quadro clinico</h3></div>
+          <div class="info-block">
+            <div class="info-item-label">Dolori e limitazioni attuali</div>
+            <div class="info-item-val sensitive-data">${val(p.current_pain_notes)}</div>
+          </div>
+          <div class="info-block">
+            <div class="info-item-label">Storia clinica, infortuni, interventi</div>
+            <div class="info-item-val sensitive-data">${val(p.medical_history)}</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3 class="card-title">Sport e obiettivi</h3></div>
+          <div class="info-block">
+            <div class="info-item-label">Obiettivi</div>
+            <div class="info-item-val sensitive-data">${val(p.goals)}</div>
+          </div>
+          <div class="info-block">
+            <div class="info-item-label">Attività / Allenamento</div>
+            <div class="info-item-val sensitive-data">${val(p.sport_activity)}</div>
+          </div>
+          <div class="grid-2" style="gap:12px;">
+            <div>
+              <div class="info-item-label">Frequenza</div>
+              <div class="info-item-val">${val(p.training_frequency)}</div>
+            </div>
+            <div>
+              <div class="info-item-label">Luogo</div>
+              <div class="info-item-val">${val(p.training_location)}</div>
+            </div>
+          </div>
+          ${
+            p.general_notes
+              ? `<div class="info-block" style="margin-top:12px;">
+                  <div class="info-item-label">Note</div>
+                  <div class="info-item-val sensitive-data">${esc(p.general_notes)}</div>
+                </div>`
+              : ""
+          }
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3 class="card-title">Dati anagrafici e misure</h3></div>
+        <div class="info-grid sensitive-data">
+          <div><div class="info-item-label">Data di nascita</div><div class="info-item-val num">${p.birth_date ? formatDateIt(p.birth_date) : "—"}</div></div>
+          <div><div class="info-item-label">Sesso</div><div class="info-item-val">${val(p.gender)}</div></div>
+          <div><div class="info-item-label">Altezza</div><div class="info-item-val num">${p.height_cm ? `${p.height_cm} cm` : "—"}</div></div>
+          <div><div class="info-item-label">Peso</div><div class="info-item-val num">${weightStr ? esc(weightStr) : "—"}</div></div>
+          <div><div class="info-item-label">Professione</div><div class="info-item-val">${val(p.profession)}</div></div>
+          <div><div class="info-item-label">Telefono</div><div class="info-item-val num">${val(p.phone)}</div></div>
+          <div><div class="info-item-label">Email</div><div class="info-item-val">${val(p.email)}</div></div>
+          <div><div class="info-item-label">CF / Indirizzo</div><div class="info-item-val">${val([p.tax_code, p.address].filter(Boolean).join(" · "))}</div></div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById("enterProfileEditBtn")?.addEventListener("click", () => {
+      state.profileEditMode = true;
+      renderPersonTabProfilo(viewport, dossier);
+    });
+    document.getElementById("addSharedLimBtn")?.addEventListener("click", () => {
+      showAddSharedLimitationModal(p.id, dossier.physio.episodes || [], null);
+    });
+    return;
+  }
+
+  // Modalità Modifica
   viewport.innerHTML = `
-    <div class="grid-3" style="margin-bottom:14px;">
-      <div class="kpi-card">
-        <div class="kpi-label">📅 Prossima Seduta</div>
-        <div style="font-size:14px; font-weight:700; margin-top:4px;">${esc(nextApptText)}</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">🎟️ Sedute Residue</div>
-        <div class="kpi-value" style="font-size:22px;">${sum.total_remaining_sessions ?? 0}</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">🩺 Episodi Fisio / 🏋️ Schede PT</div>
-        <div class="kpi-value" style="font-size:22px;">${dossier.physio.episodes.length} / ${dossier.fitness.programs.length}</div>
-      </div>
-    </div>
-
-    ${activeLimsHtml}
-
     <div class="card">
       <div class="card-header">
-        <h3 class="card-title">👤 Profilo, Misure e Anamnesi (v${p.version})</h3>
-        ${!lims.length ? `<button class="btn btn-sm btn-secondary" id="addSharedLimFromProfileBtn">⚠️ + Limitazione Rapida</button>` : ""}
+        <h3 class="card-title">Modifica profilo</h3>
+        <button class="btn btn-sm btn-ghost" id="cancelProfileEditBtn">Annulla</button>
       </div>
       <form id="editPersonForm">
         <input type="hidden" name="expected_version" value="${p.version}" />
 
-        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:#64748b; margin:4px 0 10px;">
-          1. Anagrafica, Misure e Percorsi
-        </div>
+        <div class="form-section-title">Anagrafica e misure</div>
         <div class="grid-3">
           <div class="form-group">
             <label class="form-label">Nome *</label>
@@ -941,14 +756,14 @@ function renderPersonTabProfilo(viewport, dossier) {
           </div>
           <div class="form-group">
             <label class="form-label">Altezza (cm)</label>
-            <input class="form-control" type="number" min="80" max="240" step="1" name="height_cm" value="${p.height_cm ?? ""}" placeholder="es. 175" />
+            <input class="form-control" type="number" min="80" max="240" name="height_cm" value="${p.height_cm ?? ""}" />
           </div>
           <div class="form-group">
-            <label class="form-label">Peso attuale (kg)</label>
-            <input class="form-control" type="number" min="20" max="250" step="0.1" name="weight_kg" value="${p.weight_kg ?? ""}" placeholder="es. 72.5" />
+            <label class="form-label">Peso (kg)</label>
+            <input class="form-control" type="number" min="20" max="250" step="0.1" name="weight_kg" value="${p.weight_kg ?? ""}" />
           </div>
           <div class="form-group">
-            <label class="form-label">Data misurazione peso</label>
+            <label class="form-label">Data peso</label>
             <input class="form-control" type="date" name="weight_updated_at" value="${esc(p.weight_updated_at || "")}" />
           </div>
         </div>
@@ -962,31 +777,31 @@ function renderPersonTabProfilo(viewport, dossier) {
             <input class="form-control" type="email" name="email" value="${esc(p.email || "")}" />
           </div>
           <div class="form-group">
-            <label class="form-label">Professione / Giornata tipo</label>
+            <label class="form-label">Professione</label>
             <input class="form-control" name="profession" value="${esc(p.profession || "")}" />
           </div>
         </div>
         <div class="grid-3">
           <div class="form-group">
-            <label class="form-label">Percorsi Attivi (solo etichetta/filtro)</label>
-            <div style="display:flex; gap:16px; padding-top:8px;">
-              <label style="display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer;">
-                <input type="checkbox" name="physio_active" ${p.physio_active ? "checked" : ""} /> 🩺 Fisio
+            <label class="form-label">Percorsi</label>
+            <div style="display:flex; gap:16px; padding-top:6px;">
+              <label style="display:flex; align-items:center; gap:6px; font-size:13.5px; cursor:pointer;">
+                <input type="checkbox" name="physio_active" ${p.physio_active ? "checked" : ""} /> Fisio
               </label>
-              <label style="display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer;">
-                <input type="checkbox" name="fitness_active" ${p.fitness_active ? "checked" : ""} /> 🏋️ PT / Fitness
+              <label style="display:flex; align-items:center; gap:6px; font-size:13.5px; cursor:pointer;">
+                <input type="checkbox" name="fitness_active" ${p.fitness_active ? "checked" : ""} /> PT
               </label>
             </div>
           </div>
           <div class="form-group">
-            <label class="form-label">Stato Scheda</label>
+            <label class="form-label">Stato</label>
             <select class="form-control" name="status">
               <option value="attivo" ${p.status === "attivo" ? "selected" : ""}>Attivo</option>
               <option value="archiviato" ${p.status === "archiviato" ? "selected" : ""}>Archiviato</option>
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">Codice Fiscale / Indirizzo (Facoltativo)</label>
+            <label class="form-label">CF / Indirizzo</label>
             <div style="display:flex; gap:6px;">
               <input class="form-control" name="tax_code" value="${esc(p.tax_code || "")}" placeholder="CF" />
               <input class="form-control" name="address" value="${esc(p.address || "")}" placeholder="Indirizzo" />
@@ -994,63 +809,58 @@ function renderPersonTabProfilo(viewport, dossier) {
           </div>
         </div>
 
-        <hr style="border:none; border-top:1px solid var(--border-color); margin:16px 0;" />
-
-        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:#64748b; margin-bottom:10px;">
-          2. Anamnesi &amp; Storia Clinica (sempre disponibile, anche per soli PT)
-        </div>
+        <div class="form-section-title">Anamnesi</div>
         <div class="grid-2">
           <div class="form-group">
-            <label class="form-label">Storia Clinica, Infortuni, Interventi e Farmaci</label>
-            <textarea class="form-control" rows="3" name="medical_history" placeholder="Es. Intervento tunnel carpale 2025, ricostruzione LCA, ernie, farmaci...">${esc(p.medical_history || "")}</textarea>
+            <label class="form-label">Dolori e limitazioni attuali</label>
+            <textarea class="form-control" rows="3" name="current_pain_notes">${esc(p.current_pain_notes || "")}</textarea>
           </div>
           <div class="form-group">
-            <label class="form-label">Dolori, Fastidi Articolari o Limitazioni Attuali</label>
-            <textarea class="form-control" rows="3" name="current_pain_notes" placeholder="Es. Dolore spalla dx da 4 mesi (VAS 5/10), fastidio lombare saltuario...">${esc(p.current_pain_notes || "")}</textarea>
+            <label class="form-label">Storia clinica, infortuni, interventi</label>
+            <textarea class="form-control" rows="3" name="medical_history">${esc(p.medical_history || "")}</textarea>
           </div>
         </div>
 
-        <hr style="border:none; border-top:1px solid var(--border-color); margin:16px 0;" />
-
-        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:#64748b; margin-bottom:10px;">
-          3. Sport, Obiettivi &amp; Organizzazione
-        </div>
+        <div class="form-section-title">Sport e obiettivi</div>
         <div class="grid-2">
           <div class="form-group">
-            <label class="form-label">Obiettivi (3–6 mesi)</label>
-            <textarea class="form-control" rows="2" name="goals" placeholder="Es. Aumentare forza, riprendere a correre, preparare gara...">${esc(p.goals || "")}</textarea>
+            <label class="form-label">Obiettivi</label>
+            <textarea class="form-control" rows="2" name="goals">${esc(p.goals || "")}</textarea>
           </div>
           <div class="form-group">
-            <label class="form-label">Sport / Allenamento Attuale</label>
-            <textarea class="form-control" rows="2" name="sport_activity" placeholder="Es. Palestra 2x, calcio 3x, pilates 1x...">${esc(p.sport_activity || "")}</textarea>
+            <label class="form-label">Sport / Allenamento</label>
+            <textarea class="form-control" rows="2" name="sport_activity">${esc(p.sport_activity || "")}</textarea>
           </div>
         </div>
         <div class="grid-2">
           <div class="form-group">
-            <label class="form-label">Frequenza Settimanale Disponibile</label>
-            <input class="form-control" name="training_frequency" value="${esc(p.training_frequency || "")}" placeholder="Es. 2 volte a settimana" />
+            <label class="form-label">Frequenza settimanale</label>
+            <input class="form-control" name="training_frequency" value="${esc(p.training_frequency || "")}" />
           </div>
           <div class="form-group">
-            <label class="form-label">Dove si Allena</label>
-            <input class="form-control" name="training_location" value="${esc(p.training_location || "")}" placeholder="Es. Solo in studio, palestra esterna, casa..." />
+            <label class="form-label">Dove si allena</label>
+            <input class="form-control" name="training_location" value="${esc(p.training_location || "")}" />
           </div>
         </div>
         <div class="form-group">
-          <label class="form-label">Note Generali, Attrezzatura a Casa e Orari Preferiti</label>
+          <label class="form-label">Note generali</label>
           <textarea class="form-control" rows="2" name="general_notes">${esc(p.general_notes || "")}</textarea>
         </div>
 
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; flex-wrap:wrap; gap:10px;">
-          <span style="font-size:12px; color:#64748b;">Le spunte Fisio/PT servono solo per etichettare e filtrare i percorsi: tutte le tab restano sempre accessibili.</span>
-          <button type="submit" class="btn btn-primary">💾 Salva Profilo &amp; Anamnesi</button>
+        <div class="modal-footer" style="margin-top:16px;">
+          <button type="button" class="btn btn-secondary" id="cancelProfileEditBtn2">Annulla</button>
+          <button type="submit" class="btn btn-primary">Salva modifiche</button>
         </div>
       </form>
     </div>
   `;
 
-  document.getElementById("addSharedLimFromProfileBtn")?.addEventListener("click", () => {
-    showAddSharedLimitationModal(p.id, dossier.physio.episodes || [], null);
-  });
+  const cancelEdit = () => {
+    state.profileEditMode = false;
+    renderPersonTabProfilo(viewport, dossier);
+  };
+  document.getElementById("cancelProfileEditBtn")?.addEventListener("click", cancelEdit);
+  document.getElementById("cancelProfileEditBtn2")?.addEventListener("click", cancelEdit);
 
   document.getElementById("editPersonForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -1083,14 +893,34 @@ function renderPersonTabProfilo(viewport, dossier) {
         general_notes: fd.get("general_notes")
       }
     });
+    state.profileEditMode = false;
     await refreshCurrentView();
   });
 }
-const renderPersonTabAnagrafica = renderPersonTabProfilo;
 
 // ============================================================================
-// TAB 3: AREA FISIOTERAPIA (EPISODI, VALUTAZIONI, BODY MAP 2D, FLAGS, SCALE, SOAP)
+// TAB 2: FISIO & SCALE (SCALE IN PRIMO PIANO, IMPORT CSV TALLY, FLAGS RICHIUDIBILI)
 // ============================================================================
+
+async function ensureActiveEpisode(person, episodes) {
+  if (episodes && episodes.length > 0) {
+    return episodes.find((e) => e.id === state.selectedEpisodeId) || episodes[0];
+  }
+  const ep = await apiFetch("/api/physio/episodes", {
+    method: "POST",
+    body: {
+      person_id: person.id,
+      title: "Percorso fisioterapico",
+      chief_complaint: person.current_pain_notes || "Valutazione e monitoraggio",
+      body_region: "",
+      laterality: "DX",
+      start_date: todayRomeStr(),
+      init_default_flags: true
+    }
+  });
+  state.selectedEpisodeId = ep.id;
+  return ep;
+}
 
 function renderPersonTabFisio(viewport, dossier) {
   const p = dossier.person;
@@ -1100,28 +930,32 @@ function renderPersonTabFisio(viewport, dossier) {
   }
   const activeEp = episodes.find((e) => e.id === state.selectedEpisodeId) || null;
 
-  const epSelectOptions = episodes
-    .map(
-      (e) =>
-        `<option value="${e.id}" ${e.id === state.selectedEpisodeId ? "selected" : ""}>#${e.id} — ${esc(e.title)} (${esc(e.status)} · dal ${esc(e.start_date)})</option>`
-    )
-    .join("");
-
   if (!activeEp) {
     viewport.innerHTML = `
       <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">🩺 Area Fisioterapia</h3>
-          <button class="btn btn-physio" id="createFirstEpisodeBtn">➕ Nuovo Episodio Fisioterapico</button>
+        <div class="empty-state">
+          <div style="font-weight:600; color:var(--text); margin-bottom:6px;">Nessun percorso fisioterapico attivo</div>
+          <div style="margin-bottom:16px;">Crea un episodio clinico oppure importa subito una scala da CSV Tally.</div>
+          <div style="display:flex; justify-content:center; gap:8px; flex-wrap:wrap;">
+            <button class="btn btn-primary" id="createFirstEpisodeBtn">${ico("plus")} Nuovo episodio</button>
+            <button class="btn btn-secondary" id="quickImportTallyBtn">${ico("upload")} Importa CSV Tally</button>
+            <button class="btn btn-secondary" id="quickRecordScaleBtn">${ico("plus")} Registra scala</button>
+          </div>
         </div>
-        <p style="color:#475569;">Nessun episodio clinico registrato per questa persona. Crea il primo episodio per compilare Prima Valutazione, Mappa del Dolore 2D, Red/Yellow Flags, Scale di Esito e Note SOAP.</p>
       </div>
     `;
     document.getElementById("createFirstEpisodeBtn")?.addEventListener("click", () => showNewPhysioEpisodeModal(p.id));
+    document.getElementById("quickImportTallyBtn")?.addEventListener("click", async () => {
+      const ep = await ensureActiveEpisode(p, episodes);
+      showImportTallyCsvModal(ep.id);
+    });
+    document.getElementById("quickRecordScaleBtn")?.addEventListener("click", async () => {
+      const ep = await ensureActiveEpisode(p, episodes);
+      showRecordOutcomeModal(ep.id, null);
+    });
     return;
   }
 
-  // Seleziona la valutazione da visualizzare nella Mappa del Dolore / Dettaglio
   const evals = activeEp.evaluations || [];
   if (!state.selectedEvalId || !evals.some((ev) => ev.id === state.selectedEvalId)) {
     state.selectedEvalId = evals.length ? evals[evals.length - 1].id : null;
@@ -1130,132 +964,118 @@ function renderPersonTabFisio(viewport, dossier) {
   const previousEval = evals.length > 1 ? evals.find((ev) => ev.id !== (currentEval && currentEval.id)) : null;
 
   const fSum = activeEp.flag_summary || { red_present: 0, red_unassessed: 0, yellow_present: 0, yellow_unassessed: 0 };
+  const totalPresent = (fSum.red_present || 0) + (fSum.yellow_present || 0);
+  const totalUnassessed = (fSum.red_unassessed || 0) + (fSum.yellow_unassessed || 0);
 
   viewport.innerHTML = `
-    <!-- Selettore Episodio e Azioni Rapide Episodio -->
-    <div class="card" style="border-left: 5px solid var(--physio-accent);">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-        <div style="flex:1; min-width:260px;">
-          <label class="form-label">Episodio Fisioterapico Selezionato</label>
-          <select class="form-control" id="physioEpisodeSelect">${epSelectOptions}</select>
+    <!-- Selettore Episodio -->
+    <div class="card" style="padding:14px 18px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:240px;">
+          <select class="form-control form-control-sm" id="physioEpisodeSelect" style="max-width:360px; font-weight:600;">
+            ${episodes
+              .map(
+                (e) =>
+                  `<option value="${e.id}" ${e.id === state.selectedEpisodeId ? "selected" : ""}>${esc(e.title)} (${formatDateIt(e.start_date)} · ${esc(e.status)})</option>`
+              )
+              .join("")}
+          </select>
+          <button class="btn btn-sm btn-ghost" id="newPhysioEpisodeBtn" title="Nuovo episodio">${ico("plus")} Episodio</button>
         </div>
-        <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          <button class="btn btn-sm btn-physio" id="newPhysioEpisodeBtn">➕ Nuovo Episodio</button>
-          <button class="btn btn-sm btn-secondary" id="newEvalModalBtn">🩺 Nuova Valutazione / Rivalutazione</button>
-          <button class="btn btn-sm btn-secondary" id="newSoapNoteModalBtn">📝 Nuova Nota Seduta (SOAP)</button>
-          <button class="btn btn-sm btn-secondary" id="shareLimFromPhysioBtn">🔗 Condividi Limitazione col Fitness</button>
-          <button class="btn btn-sm btn-secondary" id="closeEpisodeModalBtn">🏁 Stato / Chiusura Percorso</button>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button class="btn btn-sm btn-ghost" id="shareLimFromPhysioBtn">Limitazione PT</button>
+          <button class="btn btn-sm btn-ghost" id="closeEpisodeModalBtn">Stato</button>
         </div>
       </div>
-      <div style="margin-top:10px; font-size:13.5px; color:#334155;" class="sensitive-data">
-        <strong>Problema principale:</strong> ${esc(activeEp.chief_complaint)}
-        · <strong>Distretto:</strong> ${esc(activeEp.body_region || "-")} (${esc(activeEp.laterality)})
-        · <strong>Rivalutazione prevista:</strong> <strong>${esc(activeEp.reassessment_due_date || "Non pianificata")}</strong>
-        ${activeEp.closure_summary ? `<br><strong>Esito Chiusura:</strong> ${esc(activeEp.closure_outcome)} — ${esc(activeEp.closure_summary)}` : ""}
+      <div style="margin-top:8px; font-size:13px; color:var(--text-secondary);" class="sensitive-data">
+        ${activeEp.body_region ? `<span class="tag" style="margin-right:6px;">${esc(activeEp.body_region)}${activeEp.laterality ? ` ${esc(activeEp.laterality)}` : ""}</span>` : ""}
+        <span>${esc(activeEp.chief_complaint || "")}</span>
+        ${activeEp.reassessment_due_date ? `<span style="color:var(--text-muted);"> · Rivalutazione: ${formatDateIt(activeEp.reassessment_due_date)}</span>` : ""}
+        ${activeEp.closure_summary ? `<div style="margin-top:4px; color:var(--text-muted);">Chiusura: ${esc(activeEp.closure_outcome)} — ${esc(activeEp.closure_summary)}</div>` : ""}
       </div>
     </div>
 
-    <!-- SEZIONE A: VALUTAZIONI CLINICHE E MAPPA DEL CORPO 2D SVG INTERATTIVA -->
+    <!-- 1. SCALE E QUESTIONARI (SUBITO IN PRIMO PIANO) -->
     <div class="card">
       <div class="card-header">
         <div>
-          <h3 class="card-title">1. Prima Valutazione, Rivalutazioni e Mappa Interattiva del Corpo 2D</h3>
-          <div style="font-size:12px; color:#64748b;">Ogni rilevazione conserva lo storico precedente per confrontare l'evoluzione.</div>
+          <h3 class="card-title">Scale e questionari</h3>
         </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-sm btn-secondary" id="importTallyCsvBtn">${ico("upload")} Importa CSV Tally</button>
+          <button class="btn btn-sm btn-primary" id="recordOutcomeMeasureBtn">${ico("plus")} Registra scala</button>
+        </div>
+      </div>
+      ${renderOutcomeMeasuresSection(activeEp.outcome_comparisons, activeEp.outcome_measures)}
+    </div>
+
+    <!-- 2. NOTE DI SEDUTA (SOAP) -->
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">Note di seduta</h3>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          ${activeEp.notes.length ? `<button class="btn btn-sm btn-ghost" id="copyPrevNoteAsDraftBtn">Richiama ultima</button>` : ""}
+          <button class="btn btn-sm btn-secondary" id="newSoapNoteBtn">${ico("plus")} Nuova nota</button>
+        </div>
+      </div>
+      ${renderClinicalNotesList(activeEp.notes)}
+    </div>
+
+    <!-- 3. VALUTAZIONI CLINICHE E MAPPA CORPO -->
+    <div class="card">
+      <div class="card-header">
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <h3 class="card-title">Valutazioni cliniche</h3>
           ${
             evals.length
-              ? `<select class="form-control" id="evalHistorySelect" style="width:auto;">
+              ? `<select class="form-control form-control-sm" id="evalHistorySelect" style="width:auto;">
                   ${evals
                     .map(
                       (ev) =>
                         `<option value="${ev.id}" ${ev.id === (currentEval && currentEval.id) ? "selected" : ""}>
-                          ${ev.eval_type === "prima_valutazione" ? "1ª Valutazione" : "Rivalutazione"} del ${esc(ev.eval_date)} (${esc(ev.status)})
+                          ${ev.eval_type === "prima_valutazione" ? "1ª valutazione" : "Rivalutazione"} · ${formatDateIt(ev.eval_date)} (${esc(ev.status)})
                         </option>`
                     )
                     .join("")}
                 </select>`
               : ""
           }
-          ${
-            currentEval && currentEval.status === "bozza"
-              ? `<button class="btn btn-sm btn-primary" id="editCurrentEvalBtn">✏️ Modifica / Finalizza Bozza</button>`
-              : ""
-          }
-          ${
-            currentEval && currentEval.status === "finalizzata"
-              ? `<button class="btn btn-sm btn-secondary" id="addEvalAddendumBtn">➕ Aggiungi Rettifica Datata</button>`
-              : ""
-          }
-          <button class="btn btn-sm btn-physio" id="addReassessmentBtn">🔄 Registra Rivalutazione</button>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          ${currentEval && currentEval.status === "bozza" ? `<button class="btn btn-sm btn-secondary" id="editCurrentEvalBtn">${ico("edit")} Modifica</button>` : ""}
+          ${currentEval && currentEval.status === "finalizzata" ? `<button class="btn btn-sm btn-ghost" id="addEvalAddendumBtn">+ Integrazione</button>` : ""}
+          <button class="btn btn-sm btn-secondary" id="newEvalModalBtn">${ico("plus")} ${evals.length ? "Rivalutazione" : "Valutazione"}</button>
         </div>
       </div>
-
       ${
         currentEval
-          ? renderEvaluationAndBodyMapSection(currentEval, previousEval)
-          : `<div style="color:#64748b; padding:12px 0;">Nessuna valutazione ancora presente per questo episodio. Clicca su "Nuova Valutazione" per iniziare.</div>`
+          ? renderEvaluationSection(currentEval, previousEval)
+          : `<div style="color:var(--text-muted); font-size:13px;">Nessuna valutazione registrata.</div>`
       }
     </div>
 
-    <!-- SEZIONE B: RED FLAGS E YELLOW FLAGS STRUTTURATE -->
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <h3 class="card-title">2. Red Flags &amp; Yellow Flags Documentate</h3>
-          <div style="font-size:12px; color:#64748b;">
-            Stati distinti: <strong>Presente</strong>, <strong>Assente</strong>, <strong>Non valutato</strong>.
-            <em>L'assenza di una segnalazione non costituisce diagnosi automatica né conferma automatica di sicurezza.</em>
-          </div>
+    <!-- 4. RED & YELLOW FLAGS (RICHIUDIBILE) -->
+    <details class="clean-details" ${fSum.red_present > 0 ? "open" : ""}>
+      <summary>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span>Red &amp; Yellow Flags</span>
+          ${fSum.red_present > 0 ? `<span class="tag tag-danger">${fSum.red_present} Red presenti</span>` : ""}
+          ${fSum.yellow_present > 0 ? `<span class="tag tag-warning">${fSum.yellow_present} Yellow presenti</span>` : ""}
+          ${totalPresent === 0 ? `<span class="tag">Nessuna presente</span>` : ""}
+          ${totalUnassessed > 0 ? `<span class="tag">${totalUnassessed} da valutare</span>` : ""}
         </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <span class="badge ${fSum.red_present > 0 ? "badge-danger" : "badge-success"}">Red Flags presenti: ${fSum.red_present}</span>
-          <span class="badge ${fSum.red_unassessed + fSum.yellow_unassessed > 0 ? "badge-warning" : "badge-neutral"}">
-            Ancora da approfondire (Non valutati): ${fSum.red_unassessed + fSum.yellow_unassessed}
-          </span>
-          <button class="btn btn-sm btn-secondary" id="addCustomFlagBtn">➕ Aggiungi Flag Personalizzata</button>
+        ${ico("chevronDown")}
+      </summary>
+      <div class="details-body">
+        <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
+          <button class="btn btn-sm btn-secondary" id="addCustomFlagBtn">${ico("plus")} Aggiungi flag</button>
         </div>
+        ${renderClinicalFlagsTable(activeEp.flags)}
       </div>
-      ${renderClinicalFlagsTable(activeEp.flags)}
-    </div>
-
-    <!-- SEZIONE C: SCALE E MISURE DI ESITO (CON VERIFICA VERSIONE E CONFRONTO) -->
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <h3 class="card-title">3. Scale e Misure di Esito (Confronto Longitudinale per Stessa Versione)</h3>
-          <div style="font-size:12px; color:#64748b;">
-            Un dato mancante non equivale a zero. Una variazione numerica non equivale automaticamente a un miglioramento clinicamente significativo.
-          </div>
-        </div>
-        <button class="btn btn-sm btn-physio" id="recordOutcomeMeasureBtn">📏 Registra Misura (NPRS, PSFS, ODI, QuickDASH, LEFS...)</button>
-      </div>
-      ${renderOutcomeMeasuresSection(activeEp.outcome_comparisons, activeEp.outcome_measures)}
-    </div>
-
-    <!-- SEZIONE D: SEDUTE SUCCESSIVE (NOTE SOAP, BOZZE, RICHIAMO PRECEDENTE E RETTIFICHE DATATE) -->
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <h3 class="card-title">4. Sedute Successive — Note Strutturate SOAP</h3>
-          <div style="font-size:12px; color:#64748b;">
-            Puoi salvare in bozza, richiamare una nota precedente conservando la data d'origine, o aggiungere rettifiche datate alle note finalizzate.
-          </div>
-        </div>
-        <div style="display:flex; gap:8px;">
-          ${
-            activeEp.notes.length
-              ? `<button class="btn btn-sm btn-secondary" id="copyPrevNoteAsDraftBtn">📋 Richiama ultima nota come bozza</button>`
-              : ""
-          }
-          <button class="btn btn-sm btn-primary" id="newSoapNoteBtn2">➕ Nuova Nota SOAP</button>
-        </div>
-      </div>
-      ${renderClinicalNotesList(activeEp.notes)}
-    </div>
+    </details>
   `;
 
-  // Event listeners Area Fisio
+  // Event listeners
   document.getElementById("physioEpisodeSelect")?.addEventListener("change", async (e) => {
     state.selectedEpisodeId = Number(e.target.value);
     state.selectedEvalId = null;
@@ -1266,33 +1086,52 @@ function renderPersonTabFisio(viewport, dossier) {
     await refreshCurrentView();
   });
   document.getElementById("newPhysioEpisodeBtn")?.addEventListener("click", () => showNewPhysioEpisodeModal(p.id));
-  document.getElementById("newEvalModalBtn")?.addEventListener("click", () =>
-    showEvaluationModal(activeEp, null, "prima_valutazione")
+  document.getElementById("shareLimFromPhysioBtn")?.addEventListener("click", () =>
+    showAddSharedLimitationModal(p.id, episodes, activeEp.id)
   );
-  document.getElementById("addReassessmentBtn")?.addEventListener("click", () =>
-    showEvaluationModal(activeEp, null, "rivalutazione")
+  document.getElementById("closeEpisodeModalBtn")?.addEventListener("click", () => showCloseEpisodeModal(activeEp));
+
+  document.getElementById("importTallyCsvBtn")?.addEventListener("click", () => showImportTallyCsvModal(activeEp.id));
+  document.getElementById("recordOutcomeMeasureBtn")?.addEventListener("click", () =>
+    showRecordOutcomeModal(activeEp.id, currentEval ? currentEval.id : null)
+  );
+
+  document.getElementById("newSoapNoteBtn")?.addEventListener("click", () => showSoapNoteModal(activeEp, null));
+  document.getElementById("copyPrevNoteAsDraftBtn")?.addEventListener("click", () =>
+    showSoapNoteModal(activeEp, null, activeEp.notes[0])
+  );
+
+  document.getElementById("newEvalModalBtn")?.addEventListener("click", () =>
+    showEvaluationModal(activeEp, null, evals.length ? "rivalutazione" : "prima_valutazione")
   );
   document.getElementById("editCurrentEvalBtn")?.addEventListener("click", () =>
     showEvaluationModal(activeEp, currentEval, currentEval.eval_type)
   );
   document.getElementById("addEvalAddendumBtn")?.addEventListener("click", () =>
-    showAddendumModal({ evaluation_id: currentEval.id, title: `Valutazione del ${currentEval.eval_date}` })
+    showAddendumModal({ evaluation_id: currentEval.id, title: `Valutazione del ${formatDateIt(currentEval.eval_date)}` })
   );
-  document.getElementById("newSoapNoteModalBtn")?.addEventListener("click", () => showSoapNoteModal(activeEp, null));
-  document.getElementById("newSoapNoteBtn2")?.addEventListener("click", () => showSoapNoteModal(activeEp, null));
-  document.getElementById("copyPrevNoteAsDraftBtn")?.addEventListener("click", () =>
-    showSoapNoteModal(activeEp, null, activeEp.notes[0])
-  );
-  document.getElementById("shareLimFromPhysioBtn")?.addEventListener("click", () =>
-    showAddSharedLimitationModal(p.id, episodes, activeEp.id)
-  );
-  document.getElementById("closeEpisodeModalBtn")?.addEventListener("click", () => showCloseEpisodeModal(activeEp));
   document.getElementById("addCustomFlagBtn")?.addEventListener("click", () => showCustomFlagModal(activeEp.id));
-  document.getElementById("recordOutcomeMeasureBtn")?.addEventListener("click", () =>
-    showRecordOutcomeModal(activeEp.id, currentEval ? currentEval.id : null)
-  );
 
-  // Eventi per aggiornare stato flags direttamente in tabella
+  // Inline quick-update status on flags
+  viewport.querySelectorAll("[data-quick-flag-status]").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      const fid = Number(sel.getAttribute("data-quick-flag-status"));
+      const fl = activeEp.flags.find((x) => x.id === fid);
+      if (!fl) return;
+      await apiFetch("/api/physio/flags", {
+        method: "PUT",
+        body: {
+          id: fl.id,
+          status: sel.value,
+          source_info: fl.source_info || "Valutazione clinica",
+          notes: fl.notes || "",
+          action_taken: fl.action_taken || ""
+        }
+      });
+      await refreshCurrentView();
+    });
+  });
+
   viewport.querySelectorAll("[data-edit-flag]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const fid = Number(btn.getAttribute("data-edit-flag"));
@@ -1301,7 +1140,15 @@ function renderPersonTabFisio(viewport, dossier) {
     });
   });
 
-  // Eventi per modificare bozza SOAP o aggiungere rettifica datata
+  viewport.querySelectorAll("[data-del-outcome]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const oid = Number(btn.getAttribute("data-del-outcome"));
+      if (!window.confirm("Eliminare questa rilevazione?")) return;
+      await apiFetch(`/api/physio/outcome-measures/${oid}`, { method: "DELETE" });
+      await refreshCurrentView();
+    });
+  });
+
   viewport.querySelectorAll("[data-edit-soap]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const nid = Number(btn.getAttribute("data-edit-soap"));
@@ -1313,251 +1160,163 @@ function renderPersonTabFisio(viewport, dossier) {
     btn.addEventListener("click", () => {
       const nid = Number(btn.getAttribute("data-addendum-soap"));
       const note = activeEp.notes.find((x) => x.id === nid);
-      if (note) showAddendumModal({ note_id: note.id, title: `Nota SOAP del ${note.note_date}` });
+      if (note) showAddendumModal({ note_id: note.id, title: `Nota del ${formatDateIt(note.note_date)}` });
     });
   });
 }
 
-function renderEvaluationAndBodyMapSection(ev, prevEval) {
-  const measRows = (ev.objective_measurements || [])
-    .map(
-      (m) =>
-        `<tr><td><strong>${esc(m.name)}</strong></td><td>${esc(m.value)} ${esc(m.unit)}</td><td><span class="badge badge-neutral">${esc(m.side)}</span></td><td>${esc(m.notes || "-")}</td></tr>`
-    )
-    .join("");
+function renderOutcomeMeasuresSection(comparisons) {
+  if (!comparisons || !comparisons.length) {
+    return `<div style="color:var(--text-muted); font-size:13px;">Nessuna scala registrata. Usa "Importa CSV Tally" o "Registra scala".</div>`;
+  }
 
-  const markers = ev.body_map_markers || [];
-  const prevMarkers = prevEval ? prevEval.body_map_markers || [] : [];
-
-  const accessibleMarkersTable = markers
-    .map(
-      (m, i) => `
-      <tr>
-        <td>#${i + 1} (${m.view_side === "anterior" ? "Anteriore" : "Posteriore"})</td>
-        <td><strong>${esc(m.anatomical_region)}</strong></td>
-        <td><span class="badge badge-physio">${esc(m.laterality)}</span></td>
-        <td>${esc(m.symptom_type)} (${m.marker_kind === "area" ? "Area" : "Punto"})</td>
-        <td><strong>${m.intensity}/10</strong></td>
-        <td class="sensitive-data">${esc(m.notes || "-")}</td>
-      </tr>
-    `
-    )
-    .join("");
-
-  const addendaHtml = (ev.addenda || [])
-    .map(
-      (a) => `
-      <div style="background:#fffbeb; border-left:4px solid #d97706; padding:8px 12px; margin-top:8px; font-size:13px;">
-        <strong>📌 Rettifica/Integrazione datata (${esc(formatRomeDateTime(a.created_at))} — ${esc(a.author_name)}):</strong>
-        Motivo: <em>${esc(a.reason)}</em><br>${esc(a.addendum_text)}
-      </div>
-    `
-    )
-    .join("");
-
-  return `
-    <div style="margin-bottom:12px;">
-      <span class="badge ${ev.eval_type === "prima_valutazione" ? "badge-physio" : "badge-success"}">
-        ${ev.eval_type === "prima_valutazione" ? "1ª VALUTAZIONE INIZIALE" : "RIVALUTAZIONE"}
-      </span>
-      <span class="badge ${ev.status === "finalizzata" ? "badge-success" : "badge-warning"}" style="margin-left:6px;">
-        ${ev.status === "finalizzata" ? `🔒 Finalizzata (${esc(formatRomeDateTime(ev.finalized_at))})` : "✏️ In Bozza"}
-      </span>
-      <span style="font-size:13px; color:#64748b; margin-left:8px;">Data: <strong>${esc(ev.eval_date)}</strong> · Versione: v${ev.version}</span>
-    </div>
-
-    <div class="grid-2 sensitive-data" style="margin-bottom:14px;">
-      <div style="background:var(--bg-subtle); padding:12px; border-radius:8px; border:1px solid var(--border-color);">
-        <h4 style="margin:0 0 8px 0;">Anamnesi e Comportamento dei Sintomi</h4>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Motivo consultazione:</strong> ${esc(ev.consult_reason || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Obiettivi e attività importanti:</strong> ${esc(ev.patient_goals || "-")} | ${esc(ev.important_activities || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Esordio e distribuzione:</strong> ${esc(ev.symptom_onset || "-")} — ${esc(ev.symptom_distribution || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Comportamento e 24h:</strong> ${esc(ev.symptom_behavior || "-")} | 24h: ${esc(ev.pattern_24h || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Fattori Aggravanti / Allevianti:</strong> ⬆️ ${esc(ev.aggravating_factors || "-")} | ⬇️ ${esc(ev.easing_factors || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Storia clinica, traumi, farmaci, imaging:</strong> ${esc(ev.medical_history || "-")} | ${esc(ev.surgeries_traumas || "-")} | ${esc(ev.imaging_reports || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Sonno, carico lavoro/sport e psicosociale:</strong> ${esc(ev.sleep_quality || "-")} | ${esc(ev.work_sport_load || "-")} | ${esc(ev.psychosocial_factors || "-")}</p>
-      </div>
-
-      <div style="background:var(--bg-subtle); padding:12px; border-radius:8px; border:1px solid var(--border-color);">
-        <h4 style="margin:0 0 8px 0;">Esame Obiettivo e Ragionamento Clinico</h4>
-        <div class="table-wrap" style="margin-bottom:8px;">
-          <table class="data-table">
-            <thead><tr><th>Parametro / Movimento</th><th>Misura</th><th>Lato</th><th>Osservazioni</th></tr></thead>
-            <tbody>${measRows || '<tr><td colspan="4">Nessuna misurazione tabellare</td></tr>'}</tbody>
-          </table>
-        </div>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Test speciali &amp; Osservazioni:</strong> ${esc(ev.special_tests || "-")} | ${esc(ev.clinical_observations || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Ragionamento clinico del professionista:</strong> ${esc(ev.clinical_reasoning || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Piano terapeutico &amp; Indicazioni:</strong> ${esc(ev.treatment_plan || "-")} | ${esc(ev.home_advice || "-")}</p>
-      </div>
-    </div>
-
-    ${addendaHtml}
-
-    <!-- Vista Doppia Mappa del Corpo (Anteriore + Posteriore) + Alternativa Testuale Accessibile -->
-    <div style="background:var(--bg-subtle); padding:14px; border-radius:10px; border:1px solid var(--border-strong); margin-top:12px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
-        <h4 style="margin:0;">🧍 Mappa Anatomica del Corpo 2D (Vista Anteriore &amp; Posteriore con Lateralità Esplicita)</h4>
-        ${
-          prevEval
-            ? `<span class="badge badge-neutral">Confronto attivo: tratteggio grigio = rilevazione del ${esc(prevEval.eval_date)}</span>`
-            : ""
-        }
-      </div>
-      <div class="grid-2">
-        <div class="body-map-stage">
-          ${renderBodySvgMarkup("anterior", markers, prevMarkers)}
-        </div>
-        <div class="body-map-stage">
-          ${renderBodySvgMarkup("posterior", markers, prevMarkers)}
-        </div>
-      </div>
-
-      <h5 style="margin:14px 0 6px 0;">Alternativa Testuale Accessibile — Elenco Punti e Aree Segnate (${markers.length})</h5>
-      <div class="table-wrap">
-        <table class="data-table" aria-label="Elenco testuale accessibile dei marcatori sulla mappa del corpo">
-          <thead>
-            <tr><th>Vista</th><th>Regione Anatomica</th><th>Lateralità</th><th>Tipo Sintomo</th><th>Intensità</th><th>Note</th></tr>
-          </thead>
-          <tbody>
-            ${accessibleMarkersTable || '<tr><td colspan="6">Nessun punto o area registrata su questa mappa.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
-}
-
-function renderClinicalFlagsTable(flags) {
-  const rows = (flags || [])
-    .map((f) => {
-      const typeBadge =
-        f.flag_type === "red"
-          ? `<span class="badge badge-danger">🚩 RED FLAG</span>`
-          : `<span class="badge badge-warning">⚠️ YELLOW FLAG</span>`;
-      let statusBadge = `<span class="badge badge-warning">❓ NON VALUTATO (Da approfondire)</span>`;
-      if (f.status === "assente") {
-        statusBadge = `<span class="badge badge-success">✓ Assente</span>`;
-      } else if (f.status === "presente") {
-        statusBadge = `<span class="badge badge-danger">❗ PRESENTE</span>`;
-      }
-      return `
-        <tr style="${f.status === "non_valutato" ? "background:#fffbeb;" : f.status === "presente" ? "background:#fef2f2;" : ""}">
-          <td>${typeBadge}<div style="font-size:11px; color:#64748b; margin-top:2px;">${esc(f.category)}</div></td>
-          <td>
-            <strong>${esc(f.item_label)}</strong>
-            <div style="font-size:11px; color:#64748b;">Fonte: ${esc(f.guideline_source)} (${esc(f.guideline_version)})</div>
-          </td>
-          <td>${statusBadge}</td>
-          <td class="sensitive-data" style="font-size:12.5px;">
-            <strong>Note:</strong> ${esc(f.notes || "-")}<br>
-            <strong>Fonte dato:</strong> ${esc(f.source_info || "-")} (${esc(f.recorded_date)})<br>
-            <strong>Azione intrapresa:</strong> ${esc(f.action_taken || "-")}
-          </td>
-          <td style="text-align:right;">
-            <button class="btn btn-sm btn-secondary" data-edit-flag="${f.id}">Aggiorna</button>
-          </td>
-        </tr>
-      `;
-    })
-    .join("");
-
-  return `
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead>
-          <tr><th>Tipologia</th><th>Elemento / Criterio di Screening</th><th>Stato Rilevato</th><th>Note, Fonte e Azione del Professionista</th><th style="text-align:right;">Azione</th></tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-  `;
-}
-
-function renderOutcomeMeasuresSection(comparisons, allMeasures) {
-  const compCards = (comparisons || [])
+  return comparisons
     .map((c) => {
-      const seriesPoints = c.series
-        .map(
-          (s) =>
-            `<span class="badge badge-neutral" style="margin-right:4px;">${esc(s.recorded_date)}: <strong>${s.score_value}${esc(s.score_unit)}</strong> ${s.missing_items > 0 ? `(mancanti: ${s.missing_items})` : ""}</span>`
-        )
-        .join(" → ");
-      const deltaStr =
-        c.numeric_delta !== null ? (c.numeric_delta > 0 ? `+${c.numeric_delta}` : `${c.numeric_delta}`) : "N/A (1 sola rilevazione)";
-      return `
-        <div style="padding:10px 12px; border:1px solid var(--border-color); border-radius:8px; margin-bottom:10px; background:var(--bg-subtle);">
-          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-            <div>
-              <strong>${esc(c.scale_name)}</strong>
-              <span class="badge badge-physio" style="margin-left:6px;">Versione: ${esc(c.scale_version)}</span>
+      const seriesDesc = [...(c.series || [])].reverse();
+      const latest = seriesDesc[0];
+      const latestBreakdown = computeScaleBreakdown(c.scale_code, latest?.responses, latest?.score_value);
+      const deltaBadge =
+        c.numeric_delta !== null
+          ? `<span class="tag ${c.numeric_delta < 0 ? "tag-success" : c.numeric_delta > 0 ? "tag-warning" : ""} num">${c.numeric_delta > 0 ? "+" : ""}${c.numeric_delta}${esc(c.score_unit)}</span>`
+          : "";
+
+      const entriesHtml = seriesDesc
+        .map((s) => {
+          const bd = computeScaleBreakdown(s.scale_code, s.responses, s.score_value);
+          const responses = Array.isArray(s.responses) ? s.responses : [];
+          const hasNamedItems = responses.length > 0 && responses[0] && (responses[0].text || responses[0].activity);
+
+          const subscalesHtml = bd.chips.length
+            ? `<div class="subscale-row">
+                ${bd.chips.map((ch) => `<span class="subscale-chip">${esc(ch.label)}: <strong>${esc(ch.value)}</strong></span>`).join("")}
+               </div>`
+            : "";
+
+          const psfsInline =
+            s.scale_code === "PSFS" && responses.length
+              ? `<div class="subscale-row">
+                  ${responses
+                    .map((r) => `<span class="subscale-chip">${esc(r.activity)}: <strong>${r.score !== null ? `${r.score}/10` : "—"}</strong></span>`)
+                    .join("")}
+                 </div>`
+              : "";
+
+          const itemsDetailHtml =
+            hasNamedItems && s.scale_code !== "PSFS"
+              ? `
+                <details class="inline-details">
+                  <summary>Dettaglio risposte (${responses.length} item)</summary>
+                  <div class="table-wrap" style="margin-top:8px;">
+                    <table class="data-table data-table-compact">
+                      <thead><tr><th style="width:36px;">#</th><th>Domanda</th><th>Sottoscala</th><th style="text-align:right;">Punti</th></tr></thead>
+                      <tbody>
+                        ${responses
+                          .map(
+                            (it, idx) => `
+                            <tr>
+                              <td class="num" style="color:var(--text-muted);">${esc(it.item ?? idx + 1)}</td>
+                              <td>${esc(it.text || it.activity || "—")}</td>
+                              <td style="color:var(--text-muted);">${esc(it.subscale || "—")}</td>
+                              <td class="num" style="text-align:right; font-weight:${Number(it.score) >= 3 ? "700" : "500"};">${it.score !== null && it.score !== undefined ? esc(it.score) : "—"}</td>
+                            </tr>`
+                          )
+                          .join("")}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              `
+              : "";
+
+          return `
+            <div class="scale-entry">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:13px;">
+                  <strong class="num">${formatDateIt(s.recorded_date)}</strong>
+                  <span class="tag num"><strong>${esc(s.score_value)}${esc(s.score_unit)}</strong></span>
+                  ${bd.badge ? `<span class="tag ${bd.badge.cls}">${esc(bd.badge.text)}</span>` : ""}
+                  ${s.context_label ? `<span style="color:var(--text-muted);">${esc(s.context_label)}</span>` : ""}
+                </div>
+                <button class="btn btn-xs btn-danger-ghost" data-del-outcome="${s.id}" title="Elimina rilevazione">${ico("trash")}</button>
+              </div>
+              ${subscalesHtml}
+              ${psfsInline}
+              ${s.clinical_note ? `<div style="font-size:12.5px; color:var(--text-secondary); margin-top:6px;" class="sensitive-data">${esc(s.clinical_note)}</div>` : ""}
+              ${itemsDetailHtml}
             </div>
+          `;
+        })
+        .join("");
+
+      return `
+        <div class="scale-card">
+          <div class="scale-header">
             <div>
-              Variazione numerica (stessa versione): <strong>${esc(deltaStr)} ${esc(c.score_unit)}</strong>
+              <div style="font-weight:600; font-size:14.5px; color:var(--text);">${esc(c.scale_name)}</div>
+              <div style="font-size:12px; color:var(--text-muted);">${esc(c.scale_version)}</div>
+            </div>
+            <div style="display:flex; align-items:baseline; gap:8px;">
+              ${deltaBadge}
+              <div class="scale-score-big">${esc(latest?.score_value)}<span class="scale-score-unit">${esc(c.score_unit)}</span></div>
             </div>
           </div>
-          <div style="margin-top:8px;">${seriesPoints}</div>
-          <div style="font-size:11.5px; color:#64748b; margin-top:6px;">ℹ️ ${esc(c.clinical_warning)}</div>
+          ${entriesHtml}
         </div>
       `;
     })
     .join("");
-
-  return compCards || '<div style="color:#64748b;">Nessuna scala di esito ancora registrata per questo episodio.</div>';
 }
 
 function renderClinicalNotesList(notes) {
   if (!notes || !notes.length) {
-    return '<div style="color:#64748b;">Nessuna nota di seduta successiva registrata.</div>';
+    return `<div style="color:var(--text-muted); font-size:13px;">Nessuna nota di seduta registrata.</div>`;
   }
   return notes
     .map((n) => {
+      const rows = [
+        ["S", n.subjective_response],
+        ["O", n.objective_findings],
+        ["A", [n.interventions_performed, n.exercises_performed].filter(Boolean).join(" · ")],
+        ["P", n.plan_next_steps]
+      ].filter(([, v]) => v && String(v).trim() !== "");
+
       const addenda = (n.addenda || [])
         .map(
           (a) => `
-          <div style="background:#fffbeb; border-left:3px solid #d97706; padding:6px 10px; margin-top:6px; font-size:12.5px;">
-            <strong>📌 Rettifica datata (${esc(formatRomeDateTime(a.created_at))}):</strong> ${esc(a.addendum_text)} <em>(Motivo: ${esc(a.reason)})</em>
-          </div>
-        `
+          <div style="background:var(--warning-soft); border-left:2px solid var(--warning); padding:6px 10px; margin-top:8px; font-size:12.5px; border-radius:4px;">
+            <strong>Integrazione (${formatRomeDateTime(a.created_at)}):</strong> ${esc(a.addendum_text)}
+          </div>`
         )
         .join("");
 
       return `
-        <div style="border:1px solid var(--border-color); border-radius:8px; padding:12px; margin-bottom:10px; background:var(--bg-surface);">
+        <div style="border:1px solid var(--border); border-radius:var(--radius-md); padding:12px 14px; margin-bottom:10px;">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
-            <div>
-              <strong>Seduta del ${esc(n.note_date)}</strong>
-              <span class="badge ${n.status === "finalizzata" ? "badge-success" : "badge-warning"}" style="margin-left:6px;">
-                ${n.status === "finalizzata" ? "🔒 Finalizzata" : "✏️ Bozza"}
-              </span>
-              ${
-                n.copied_from_note_id
-                  ? `<span class="badge badge-neutral" style="margin-left:6px;">Richiamata da nota del ${esc(n.copied_from_date || "#" + n.copied_from_note_id)}</span>`
-                  : ""
-              }
+            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              <strong class="num">${formatDateIt(n.note_date)}</strong>
+              <span class="tag ${n.status === "finalizzata" ? "tag-success" : "tag-warning"}">${n.status === "finalizzata" ? "Finalizzata" : "Bozza"}</span>
               ${
                 n.pain_pre !== null || n.pain_post !== null
-                  ? `<span class="badge badge-physio" style="margin-left:6px;">Dolore Pre/Post: ${n.pain_pre ?? "-"} → ${n.pain_post ?? "-"}/10</span>`
+                  ? `<span class="tag num">Dolore ${n.pain_pre ?? "—"} → ${n.pain_post ?? "—"}/10</span>`
                   : ""
               }
             </div>
             <div>
               ${
                 n.status === "bozza"
-                  ? `<button class="btn btn-sm btn-primary" data-edit-soap="${n.id}">✏️ Modifica / Finalizza Bozza</button>`
-                  : `<button class="btn btn-sm btn-secondary" data-addendum-soap="${n.id}">➕ Rettifica/Integrazione datata</button>`
+                  ? `<button class="btn btn-xs btn-secondary" data-edit-soap="${n.id}">${ico("edit")} Modifica</button>`
+                  : `<button class="btn btn-xs btn-ghost" data-addendum-soap="${n.id}">+ Integrazione</button>`
               }
             </div>
           </div>
-          <div class="grid-2 sensitive-data" style="font-size:13.5px;">
-            <div>
-              <strong>S (Risposta seduta prec. / Soggettivo):</strong> ${esc(n.subjective_response || "-")}<br>
-              <strong>O (Esame / Osservazioni):</strong> ${esc(n.objective_findings || "-")}
-            </div>
-            <div>
-              <strong>A (Interventi &amp; Esercizi svolti):</strong> ${esc(n.interventions_performed || "-")} | ${esc(n.exercises_performed || "-")}<br>
-              <strong>P (Prossimi passi):</strong> ${esc(n.plan_next_steps || "-")}
-            </div>
+          <div class="sensitive-data" style="font-size:13px; display:grid; gap:4px;">
+            ${
+              rows.length
+                ? rows
+                    .map(([k, v]) => `<div><strong style="color:var(--text-muted); margin-right:6px;">${k}</strong> ${esc(v)}</div>`)
+                    .join("")
+                : `<span style="color:var(--text-muted);">Nessun contenuto compilato.</span>`
+            }
           </div>
           ${addenda}
         </div>
@@ -1566,8 +1325,134 @@ function renderClinicalNotesList(notes) {
     .join("");
 }
 
+function renderEvaluationSection(ev, prevEval) {
+  const fields = [
+    ["Motivo", ev.consult_reason],
+    ["Obiettivi", ev.patient_goals],
+    ["Esordio", ev.symptom_onset],
+    ["Aggravanti", ev.aggravating_factors],
+    ["Allevianti", ev.easing_factors],
+    ["Storia clinica", ev.medical_history],
+    ["Carico / Sonno", ev.work_sport_load],
+    ["Test speciali", ev.special_tests],
+    ["Ragionamento clinico", ev.clinical_reasoning],
+    ["Indicazioni domiciliari", ev.home_advice]
+  ].filter(([, v]) => v && String(v).trim() !== "");
+
+  const markers = ev.body_map_markers || [];
+  const prevMarkers = prevEval ? prevEval.body_map_markers || [] : [];
+
+  const addendaHtml = (ev.addenda || [])
+    .map(
+      (a) => `
+      <div style="background:var(--warning-soft); border-left:2px solid var(--warning); padding:6px 10px; margin-top:8px; font-size:12.5px; border-radius:4px;">
+        <strong>Integrazione (${formatRomeDateTime(a.created_at)}):</strong> ${esc(a.addendum_text)}
+      </div>`
+    )
+    .join("");
+
+  return `
+    <div style="display:flex; align-items:center; gap:6px; margin-bottom:12px;">
+      <span class="tag tag-accent">${ev.eval_type === "prima_valutazione" ? "1ª valutazione" : "Rivalutazione"}</span>
+      <span class="tag ${ev.status === "finalizzata" ? "tag-success" : "tag-warning"}">${ev.status === "finalizzata" ? "Finalizzata" : "Bozza"}</span>
+      <span class="num" style="font-size:12.5px; color:var(--text-muted);">${formatDateIt(ev.eval_date)}</span>
+    </div>
+
+    ${
+      fields.length
+        ? `<div class="grid-2 sensitive-data" style="gap:10px 18px; margin-bottom:12px;">
+            ${fields
+              .map(
+                ([k, v]) => `
+                <div>
+                  <div class="info-item-label">${k}</div>
+                  <div class="info-item-val">${esc(v)}</div>
+                </div>`
+              )
+              .join("")}
+          </div>`
+        : ""
+    }
+
+    ${addendaHtml}
+
+    ${
+      markers.length > 0
+        ? `
+          <details class="inline-details" open>
+            <summary>Mappa corporea (${markers.length} punti)</summary>
+            <div class="grid-2" style="margin-top:10px;">
+              <div class="body-map-stage">${renderBodySvgMarkup("anterior", markers, prevMarkers)}</div>
+              <div class="body-map-stage">${renderBodySvgMarkup("posterior", markers, prevMarkers)}</div>
+            </div>
+            <div class="table-wrap" style="margin-top:10px;">
+              <table class="data-table data-table-compact">
+                <thead><tr><th>Vista</th><th>Regione</th><th>Lato</th><th>Sintomo</th><th>Intensità</th><th>Note</th></tr></thead>
+                <tbody>
+                  ${markers
+                    .map(
+                      (m) => `
+                      <tr>
+                        <td>${m.view_side === "anterior" ? "Ant" : "Post"}</td>
+                        <td><strong>${esc(m.anatomical_region)}</strong></td>
+                        <td>${esc(m.laterality)}</td>
+                        <td>${esc(m.symptom_type)}</td>
+                        <td class="num"><strong>${m.intensity}/10</strong></td>
+                        <td class="sensitive-data">${esc(m.notes || "—")}</td>
+                      </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        `
+        : ""
+    }
+  `;
+}
+
+function renderClinicalFlagsTable(flags) {
+  if (!flags || !flags.length) {
+    return `<div style="color:var(--text-muted); font-size:13px;">Nessuna flag registrata.</div>`;
+  }
+  return `
+    <div class="table-wrap">
+      <table class="data-table data-table-compact">
+        <thead>
+          <tr><th>Tipo</th><th>Criterio</th><th style="width:150px;">Stato</th><th style="width:70px;"></th></tr>
+        </thead>
+        <tbody>
+          ${flags
+            .map(
+              (f) => `
+              <tr>
+                <td><span class="tag ${f.flag_type === "red" ? "tag-danger" : "tag-warning"}">${f.flag_type === "red" ? "Red" : "Yellow"}</span></td>
+                <td>
+                  <div style="font-weight:500; color:var(--text);">${esc(f.item_label)}</div>
+                  ${f.notes || f.action_taken ? `<div style="font-size:12px; color:var(--text-muted);" class="sensitive-data">${esc([f.notes, f.action_taken].filter(Boolean).join(" · "))}</div>` : ""}
+                </td>
+                <td>
+                  <select class="form-control form-control-sm" data-quick-flag-status="${f.id}">
+                    <option value="non_valutato" ${f.status === "non_valutato" ? "selected" : ""}>Non valutato</option>
+                    <option value="assente" ${f.status === "assente" ? "selected" : ""}>Assente</option>
+                    <option value="presente" ${f.status === "presente" ? "selected" : ""}>Presente</option>
+                  </select>
+                </td>
+                <td style="text-align:right;">
+                  <button class="btn btn-xs btn-ghost" data-edit-flag="${f.id}">Note</button>
+                </td>
+              </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 // ============================================================================
-// TAB 4: AREA FITNESS (PROFILO, LIMITAZIONI CONDIVISE, PROGRAMMI VERSIONATI, SEDUTE)
+// TAB 3: PT & FITNESS
 // ============================================================================
 
 function renderPersonTabFitness(viewport, dossier) {
@@ -1578,160 +1463,150 @@ function renderPersonTabFitness(viewport, dossier) {
   const metrics = dossier.fitness.metrics || [];
   const activeLims = (dossier.shared_limitations || []).filter((l) => l.is_active);
 
-  const limsBannerHtml = activeLims.length
-    ? activeLims
-        .map(
-          (l) => `
-        <div style="background:#fffbeb; border-left:4px solid #d97706; padding:10px 12px; border-radius:6px; margin-bottom:8px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
-            <strong style="color:#92400e;">⚠️ Limitazione Rilevante: ${esc(l.title)} (${esc(l.laterality)})</strong>
-            <span class="badge badge-warning">Fonte: ${esc(l.source_type)} · Data: ${esc(l.recorded_date)}</span>
-          </div>
-          <div style="font-size:13.5px; margin-top:4px;" class="sensitive-data">${esc(l.description)}</div>
+  const limsHtml = activeLims.length
+    ? `
+      <div class="notice-strip">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <strong style="font-size:13px; color:var(--warning);">Limitazioni dal percorso Fisio</strong>
+          <button class="btn btn-xs btn-secondary" id="jumpToPhysioFromFitnessBtn">Apri Fisio</button>
         </div>
-      `
-        )
-        .join("")
-    : '<div style="color:#64748b; font-size:13.5px;">Nessuna limitazione clinica condivisa attiva.</div>';
+        ${activeLims
+          .map(
+            (l) =>
+              `<div style="font-size:13px; margin-top:4px;" class="sensitive-data"><strong>${esc(l.title)}</strong> (${esc(l.laterality || "N/A")}) — ${esc(l.description)}</div>`
+          )
+          .join("")}
+      </div>
+    `
+    : "";
 
-  const programsHtml = programs
-    .map((prog) => {
-      const daysHtml = (prog.workouts || [])
-        .map(
-          (d, dIdx) => `
-          <div style="background:var(--bg-subtle); border:1px solid var(--border-color); border-radius:8px; padding:10px; margin-top:8px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-              <strong>🏋️ ${esc(d.day_name)}</strong>
-              <button class="btn btn-sm btn-fitness" data-log-workout-prog="${prog.id}" data-day-idx="${dIdx}">⚡ Registra Seduta Svolta su questa scheda</button>
-            </div>
-            <div class="table-wrap">
-              <table class="data-table">
-                <thead><tr><th>Esercizio</th><th>Serie</th><th>Ripetizioni</th><th>Carico Prog.</th><th>Recupero</th><th>RPE/RIR</th><th>Note</th></tr></thead>
-                <tbody>
-                  ${(d.exercises || [])
-                    .map(
-                      (ex) =>
-                        `<tr><td><strong>${esc(ex.name)}</strong></td><td>${esc(ex.sets)}</td><td>${esc(ex.reps)}</td><td>${esc(ex.load)}</td><td>${esc(ex.rest || "-")}</td><td>${esc(ex.rpe || "-")}</td><td>${esc(ex.notes || "-")}</td></tr>`
-                    )
-                    .join("")}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        `
-        )
-        .join("");
+  const programsHtml = programs.length
+    ? programs
+        .map((prog) => {
+          const daysHtml = (prog.workouts || [])
+            .map(
+              (d, dIdx) => `
+              <div style="border:1px solid var(--border); border-radius:var(--radius-md); padding:12px; margin-top:10px; background:var(--bg-hover);">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
+                  <strong style="font-size:13.5px;">${esc(d.day_name)}</strong>
+                  <button class="btn btn-xs btn-secondary" data-log-workout-prog="${prog.id}" data-day-idx="${dIdx}">Registra seduta</button>
+                </div>
+                <div class="table-wrap">
+                  <table class="data-table data-table-compact">
+                    <thead><tr><th>Esercizio</th><th>Serie</th><th>Rip.</th><th>Carico</th><th>Rec.</th><th>RPE</th><th>Note</th></tr></thead>
+                    <tbody>
+                      ${(d.exercises || [])
+                        .map(
+                          (ex) =>
+                            `<tr><td><strong>${esc(ex.name)}</strong></td><td class="num">${esc(ex.sets)}</td><td class="num">${esc(ex.reps)}</td><td class="num">${esc(ex.load)}</td><td class="num">${esc(ex.rest || "—")}</td><td class="num">${esc(ex.rpe || "—")}</td><td style="color:var(--text-muted);">${esc(ex.notes || "—")}</td></tr>`
+                        )
+                        .join("")}
+                    </tbody>
+                  </table>
+                </div>
+              </div>`
+            )
+            .join("");
 
-      const historyPills = (prog.version_history || [])
-        .map(
-          (vh) =>
-            `<span class="badge badge-neutral" style="margin-right:4px;">v${vh.version_number} (${esc(vh.saved_at.slice(0, 10))}: ${esc(vh.change_note || "modifica")})</span>`
-        )
-        .join("");
-
-      return `
-        <div class="card" style="border-left:5px solid var(--fitness-accent);">
-          <div class="card-header">
-            <div>
-              <h4 style="margin:0; font-size:17px;">${esc(prog.title)} <span class="badge badge-fitness">Versione v${prog.version} · ${esc(prog.status)}</span></h4>
-              <div style="font-size:13px; color:#475569;">Obiettivo: ${esc(prog.goal)} · Fase: ${esc(prog.phase_name || "-")} · Dal ${esc(prog.start_date)}</div>
-            </div>
-            <button class="btn btn-sm btn-secondary" data-edit-program="${prog.id}">✏️ Modifica Programma (Salva nuova versione)</button>
-          </div>
-          ${daysHtml}
-          <div style="margin-top:10px; font-size:12px; color:#64748b;">
-            📜 <strong>Storico Versioni Conservate:</strong> ${historyPills}
-          </div>
-        </div>
-      `;
-    })
-    .join("");
-
-  const logsHtml = logs
-    .map((wl) => {
-      const compRows = (wl.actual_exercises || [])
-        .map((act, idx) => {
-          const plan = (wl.planned_exercises || [])[idx] || {};
           return `
-            <tr>
-              <td><strong>${esc(act.name || plan.name)}</strong></td>
-              <td style="color:#64748b;">${esc(plan.sets || "-")} × ${esc(plan.reps || "-")} @ ${esc(plan.load || "-")} (RPE ${esc(plan.rpe || "-")})</td>
-              <td style="font-weight:700; color:var(--primary);">${esc(act.sets)} × ${esc(act.reps)} @ ${esc(act.load)} (RPE ${esc(act.rpe || "-")})</td>
-            </tr>
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <h4 class="card-title">${esc(prog.title)}</h4>
+                    <span class="tag">v${prog.version} · ${esc(prog.status)}</span>
+                  </div>
+                  <div class="card-subtitle">${esc(prog.goal)} · dal ${formatDateIt(prog.start_date)}</div>
+                </div>
+                <button class="btn btn-sm btn-secondary" data-edit-program="${prog.id}">${ico("edit")} Modifica</button>
+              </div>
+              ${daysHtml}
+            </div>
           `;
         })
-        .join("");
+        .join("")
+    : `<div class="card"><div style="color:var(--text-muted); font-size:13px;">Nessun programma di allenamento creato.</div></div>`;
 
-      return `
-        <div style="border:1px solid var(--border-color); border-radius:8px; padding:12px; margin-bottom:10px; background:var(--bg-surface);">
-          <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-            <div>
-              <strong>✅ ${esc(wl.workout_day_name)}</strong> — Data: <strong>${esc(wl.session_date)}</strong>
-              <span class="badge badge-fitness" style="margin-left:6px;">Programma v${wl.program_version}</span>
-              ${wl.session_rpe ? `<span class="badge badge-neutral">RPE Seduta: ${wl.session_rpe}/10</span>` : ""}
-            </div>
-            ${
-              wl.reported_symptoms
-                ? `<span class="badge badge-warning">⚠️ Sintomi segnalati (${wl.symptom_severity}/10)</span>`
-                : `<span class="badge badge-success">Nessun sintomo anomalo</span>`
-            }
-          </div>
-          <div class="table-wrap" style="margin:8px 0;">
-            <table class="data-table">
-              <thead><tr><th>Esercizio</th><th>Programmato</th><th>Effettivamente Svolto</th></tr></thead>
-              <tbody>${compRows}</tbody>
-            </table>
-          </div>
-          <div style="font-size:13px; color:#334155;" class="sensitive-data">
-            <strong>Risposta del cliente:</strong> ${esc(wl.client_feedback || "-")}
-            ${wl.reported_symptoms ? `<br><strong style="color:#b45309;">Sintomi emersi:</strong> ${esc(wl.reported_symptoms)}` : ""}
-            <br><strong>Indicazioni per la prossima seduta:</strong> ${esc(wl.next_session_notes || "-")}
-          </div>
-        </div>
-      `;
-    })
-    .join("");
+  const logsHtml = logs.length
+    ? logs
+        .map((wl) => {
+          const compRows = (wl.actual_exercises || [])
+            .map((act, idx) => {
+              const plan = (wl.planned_exercises || [])[idx] || {};
+              return `
+                <tr>
+                  <td><strong>${esc(act.name || plan.name)}</strong></td>
+                  <td class="num" style="color:var(--text-muted);">${esc(plan.sets || "—")} × ${esc(plan.reps || "—")} @ ${esc(plan.load || "—")}</td>
+                  <td class="num" style="font-weight:600;">${esc(act.sets)} × ${esc(act.reps)} @ ${esc(act.load)}${act.rpe ? ` (RPE ${esc(act.rpe)})` : ""}</td>
+                </tr>`;
+            })
+            .join("");
+          return `
+            <div style="border:1px solid var(--border); border-radius:var(--radius-md); padding:12px; margin-bottom:10px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+                <div>
+                  <strong>${esc(wl.workout_day_name)}</strong>
+                  <span class="num" style="color:var(--text-muted); font-size:12.5px; margin-left:6px;">${formatDateIt(wl.session_date)}</span>
+                  ${wl.session_rpe ? `<span class="tag num" style="margin-left:6px;">RPE ${wl.session_rpe}</span>` : ""}
+                </div>
+                ${wl.reported_symptoms ? `<span class="tag tag-warning">Sintomi (${wl.symptom_severity}/10)</span>` : ""}
+              </div>
+              <div class="table-wrap">
+                <table class="data-table data-table-compact">
+                  <thead><tr><th>Esercizio</th><th>Programmato</th><th>Svolto</th></tr></thead>
+                  <tbody>${compRows}</tbody>
+                </table>
+              </div>
+              ${
+                wl.client_feedback || wl.reported_symptoms || wl.next_session_notes
+                  ? `<div style="font-size:12.5px; color:var(--text-secondary); margin-top:8px;" class="sensitive-data">
+                      ${wl.client_feedback ? `<div><strong>Feedback:</strong> ${esc(wl.client_feedback)}</div>` : ""}
+                      ${wl.reported_symptoms ? `<div style="color:var(--warning);"><strong>Sintomi:</strong> ${esc(wl.reported_symptoms)}</div>` : ""}
+                      ${wl.next_session_notes ? `<div><strong>Prossima seduta:</strong> ${esc(wl.next_session_notes)}</div>` : ""}
+                    </div>`
+                  : ""
+              }
+            </div>`;
+        })
+        .join("")
+    : `<div style="color:var(--text-muted); font-size:13px;">Nessuna seduta registrata.</div>`;
 
   viewport.innerHTML = `
-    <!-- Barra Collegamento Rapido al Percorso Fisio + Limitazioni Condivise -->
-    <div class="card" style="background:#fffbeb; border-color:#fcd34d;">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:8px;">
-        <h3 style="margin:0; font-size:16px;">🔗 Limitazioni Rilevanti dal Percorso Fisioterapico (con Fonte e Data)</h3>
-        <button class="btn btn-sm btn-physio" id="jumpToPhysioFromFitnessBtn">🩺 Apri Percorso Fisio della Persona</button>
-      </div>
-      ${limsBannerHtml}
-    </div>
+    ${limsHtml}
 
-    <!-- Profilo Fitness e Test / Misurazioni -->
     <div class="grid-2">
       <div class="card">
         <div class="card-header">
-          <h3 class="card-title">🎯 Profilo Fitness, Esperienza e Attrezzatura</h3>
-          <button class="btn btn-sm btn-secondary" id="editFitnessProfileBtn">✏️ Modifica Profilo</button>
+          <h3 class="card-title">Profilo PT</h3>
+          <button class="btn btn-sm btn-secondary" id="editFitnessProfileBtn">${ico("edit")} Modifica</button>
         </div>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Obiettivi primari:</strong> ${esc(prof.primary_goals || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Esperienza:</strong> ${esc(prof.experience_level || "-")} · <strong>Disponibilità:</strong> ${esc(prof.weekly_availability || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Preferenze:</strong> ${esc(prof.preferences || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Attrezzatura disponibile:</strong> ${esc(prof.available_equipment || "-")}</p>
-        <p style="margin:4px 0; font-size:13.5px;"><strong>Valutazione iniziale fitness:</strong> ${esc(prof.initial_assessment_notes || "-")}</p>
+        <div class="info-block"><div class="info-item-label">Obiettivi</div><div class="info-item-val">${esc(prof.primary_goals || p.goals || "—")}</div></div>
+        <div class="grid-2" style="gap:10px; margin-bottom:12px;">
+          <div><div class="info-item-label">Esperienza</div><div class="info-item-val">${esc(prof.experience_level || "—")}</div></div>
+          <div><div class="info-item-label">Disponibilità</div><div class="info-item-val">${esc(prof.weekly_availability || p.training_frequency || "—")}</div></div>
+        </div>
+        <div class="info-block"><div class="info-item-label">Attrezzatura</div><div class="info-item-val">${esc(prof.available_equipment || "—")}</div></div>
+        ${prof.initial_assessment_notes ? `<div class="info-block"><div class="info-item-label">Note iniziali</div><div class="info-item-val">${esc(prof.initial_assessment_notes)}</div></div>` : ""}
       </div>
 
       <div class="card">
         <div class="card-header">
-          <h3 class="card-title">📈 Test Fisici e Misurazioni nel Tempo</h3>
-          <button class="btn btn-sm btn-secondary" id="addFitnessMetricBtn">➕ Nuovo Test / Misura</button>
+          <h3 class="card-title">Test e misurazioni</h3>
+          <button class="btn btn-sm btn-secondary" id="addFitnessMetricBtn">${ico("plus")} Nuovo test</button>
         </div>
         <div class="table-wrap">
-          <table class="data-table">
-            <thead><tr><th>Data</th><th>Parametro / Test</th><th>Valore</th><th>Lato / Note</th></tr></thead>
+          <table class="data-table data-table-compact">
+            <thead><tr><th>Data</th><th>Test</th><th>Valore</th><th>Note</th></tr></thead>
             <tbody>
               ${
-                metrics
-                  .map(
-                    (m) =>
-                      `<tr><td>${esc(m.recorded_date)}</td><td><strong>${esc(m.metric_name)}</strong> (${esc(m.metric_category)})</td><td><strong>${m.value_num} ${esc(m.unit)}</strong></td><td>${esc(m.side)} · ${esc(m.protocol_notes || "")}</td></tr>`
-                  )
-                  .join("") || '<tr><td colspan="4">Nessuna misurazione registrata.</td></tr>'
+                metrics.length
+                  ? metrics
+                      .map(
+                        (m) =>
+                          `<tr><td class="num">${formatDateIt(m.recorded_date)}</td><td><strong>${esc(m.metric_name)}</strong></td><td class="num"><strong>${m.value_num} ${esc(m.unit)}</strong></td><td style="color:var(--text-muted);">${esc(m.protocol_notes || "—")}</td></tr>`
+                      )
+                      .join("")
+                  : `<tr><td colspan="4" style="color:var(--text-muted);">Nessun test registrato.</td></tr>`
               }
             </tbody>
           </table>
@@ -1739,20 +1614,18 @@ function renderPersonTabFitness(viewport, dossier) {
       </div>
     </div>
 
-    <!-- Programmi di Allenamento -->
-    <div style="display:flex; justify-content:space-between; align-items:center; margin:14px 0 10px 0;">
-      <h3 style="margin:0;">📋 Programmi di Allenamento (con Storico Versioni)</h3>
-      <button class="btn btn-fitness" id="newFitnessProgramBtn">➕ Nuovo Programma Fitness</button>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin:6px 0 12px;">
+      <h3 class="card-title">Programmi di allenamento</h3>
+      <button class="btn btn-sm btn-primary" id="newFitnessProgramBtn">${ico("plus")} Nuovo programma</button>
     </div>
-    ${programsHtml || '<div class="card">Nessun programma fitness creato.</div>'}
+    ${programsHtml}
 
-    <!-- Storico Sedute Svolte vs Programmate -->
     <div class="card">
       <div class="card-header">
-        <h3 class="card-title">⚡ Storico Sedute Allenamento (Programmato vs Effettivamente Svolto)</h3>
-        <button class="btn btn-sm btn-fitness" id="quickLogWorkoutBtn">➕ Registra Seduta Veloce</button>
+        <h3 class="card-title">Diario sedute</h3>
+        <button class="btn btn-sm btn-secondary" id="quickLogWorkoutBtn">${ico("plus")} Registra seduta</button>
       </div>
-      ${logsHtml || '<div style="color:#64748b;">Nessuna seduta fitness ancora registrata.</div>'}
+      ${logsHtml}
     </div>
   `;
 
@@ -1760,190 +1633,140 @@ function renderPersonTabFitness(viewport, dossier) {
     state.selectedPersonTab = "fisio";
     await refreshCurrentView();
   });
-  document.getElementById("editFitnessProfileBtn")?.addEventListener("click", () =>
-    showEditFitnessProfileModal(p.id, prof)
-  );
+  document.getElementById("editFitnessProfileBtn")?.addEventListener("click", () => showEditFitnessProfileModal(p.id, prof));
   document.getElementById("addFitnessMetricBtn")?.addEventListener("click", () => showAddFitnessMetricModal(p.id));
   document.getElementById("newFitnessProgramBtn")?.addEventListener("click", () => showFitnessProgramModal(p.id, null));
   document.getElementById("quickLogWorkoutBtn")?.addEventListener("click", () =>
     showWorkoutLogModal(p.id, programs[0] || null, 0)
   );
-
   viewport.querySelectorAll("[data-edit-program]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const pid = Number(btn.getAttribute("data-edit-program"));
-      const prog = programs.find((x) => x.id === pid);
+      const prog = programs.find((x) => x.id === Number(btn.getAttribute("data-edit-program")));
       if (prog) showFitnessProgramModal(p.id, prog);
     });
   });
-
   viewport.querySelectorAll("[data-log-workout-prog]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const pid = Number(btn.getAttribute("data-log-workout-prog"));
-      const dIdx = Number(btn.getAttribute("data-day-idx") || 0);
-      const prog = programs.find((x) => x.id === pid);
-      if (prog) showWorkoutLogModal(p.id, prog, dIdx);
+      const prog = programs.find((x) => x.id === Number(btn.getAttribute("data-log-workout-prog")));
+      if (prog) showWorkoutLogModal(p.id, prog, Number(btn.getAttribute("data-day-idx") || 0));
     });
   });
 }
 
 // ============================================================================
-// TAB 5: APPUNTAMENTI DELLA PERSONA
+// TAB 4: PACCHETTI & APPUNTAMENTI DELLA PERSONA
 // ============================================================================
 
-function renderPersonTabAppuntamenti(viewport, dossier) {
+function renderPersonTabPacchettiAndAppts(viewport, dossier) {
   const p = dossier.person;
-  const rows = (dossier.appointments || [])
+  const packages = dossier.packages || [];
+  const appts = dossier.appointments || [];
+
+  const pkgCards = packages.length
+    ? packages
+        .map((pkg) => {
+          const movRows = (pkg.movements || [])
+            .map(
+              (m) => `
+              <tr>
+                <td class="num">${formatRomeDateTime(m.created_at)}</td>
+                <td><span class="tag ${m.movement_type === "CONSUME" ? "" : "tag-warning"}">${m.movement_type === "CONSUME" ? "Consumo (−1)" : "Storno (+1)"}</span></td>
+                <td>${esc(m.reason)}</td>
+              </tr>`
+            )
+            .join("");
+
+          return `
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <h4 class="card-title">${esc(pkg.name)}</h4>
+                    <span class="tag">${esc(pkg.status)}</span>
+                  </div>
+                  <div class="card-subtitle num">Acquistato il ${formatDateIt(pkg.purchased_date)}${pkg.valid_until ? ` · Scadenza ${formatDateIt(pkg.valid_until)}` : ""}</div>
+                </div>
+                <div style="display:flex; gap:6px;">
+                  ${
+                    pkg.due_cents > 0
+                      ? `<button class="btn btn-sm btn-primary" data-record-payment-pkg="${pkg.id}" data-person-id="${p.id}" data-due-cents="${pkg.due_cents}">Incassa ${formatEur(pkg.due_cents)}</button>`
+                      : `<span class="tag tag-success">Saldato</span>`
+                  }
+                  <button class="btn btn-sm btn-secondary" data-pkg-suspend="${pkg.id}" data-pkg-status="${pkg.status}">
+                    ${pkg.status === "sospeso" ? "Riattiva" : "Sospendi"}
+                  </button>
+                </div>
+              </div>
+
+              <div class="grid-4" style="margin-bottom:12px;">
+                <div class="stat-card"><div class="stat-label">Acquistate</div><div class="stat-value">${pkg.total_sessions}</div></div>
+                <div class="stat-card"><div class="stat-label">Svolte</div><div class="stat-value">${pkg.consumed_sessions}</div></div>
+                <div class="stat-card"><div class="stat-label">Residue</div><div class="stat-value" style="color:var(--accent);">${pkg.remaining_sessions}</div></div>
+                <div class="stat-card sensitive-data">
+                  <div class="stat-label">Da incassare</div>
+                  <div class="stat-value" style="color:${pkg.due_cents > 0 ? "var(--danger)" : "var(--success)"};">${formatEur(pkg.due_cents)}</div>
+                </div>
+              </div>
+
+              ${
+                pkg.movements?.length
+                  ? `<details class="inline-details">
+                      <summary>Movimenti (${pkg.movements.length})</summary>
+                      <div class="table-wrap" style="margin-top:8px;">
+                        <table class="data-table data-table-compact">
+                          <thead><tr><th>Data</th><th>Tipo</th><th>Causale</th></tr></thead>
+                          <tbody>${movRows}</tbody>
+                        </table>
+                      </div>
+                    </details>`
+                  : ""
+              }
+            </div>
+          `;
+        })
+        .join("")
+    : `<div class="card"><div style="color:var(--text-muted); font-size:13px;">Nessun pacchetto attivo.</div></div>`;
+
+  const apptRows = appts
     .map(
       (a) => `
       <tr>
-        <td><strong>${esc(formatRomeDateTime(a.start_at))}</strong> (${a.duration_minutes} min)</td>
-        <td><span class="badge ${a.service_area === "fisio" ? "badge-physio" : "badge-fitness"}">${esc(a.service_area.toUpperCase())}</span> ${esc(a.service_name)}</td>
-        <td>${a.package_id ? `Pacchetto #${a.package_id}` : `<span class="badge badge-warning">Fuori pacchetto</span>`}</td>
+        <td class="num"><strong>${formatRomeDateTime(a.start_at)}</strong> (${a.duration_minutes} min)</td>
+        <td><span class="tag ${a.service_area === "fisio" ? "tag-accent" : ""}">${a.service_area === "fisio" ? "Fisio" : "PT"}</span> ${esc(a.service_name)}</td>
         <td>${renderApptStatusBadge(a.status)}</td>
-        <td style="text-align:right;">
-          <button class="btn btn-sm btn-secondary" data-open-appt-drawer="${a.id}">Gestisci Seduta</button>
-        </td>
-      </tr>
-    `
+        <td style="text-align:right;"><button class="btn btn-xs btn-secondary" data-open-appt-drawer="${a.id}">Gestisci</button></td>
+      </tr>`
     )
     .join("");
 
   viewport.innerHTML = `
-    <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 class="card-title">Pacchetti</h3>
+      <button class="btn btn-sm btn-primary" id="personNewPkgBtn">${ico("plus")} Nuovo pacchetto</button>
+    </div>
+    ${pkgCards}
+
+    <div class="card" style="margin-top:16px;">
       <div class="card-header">
-        <h3 class="card-title">📅 Storico e Prossimi Appuntamenti di ${esc(p.first_name)} ${esc(p.last_name)}</h3>
-        <button class="btn btn-sm btn-primary" id="personNewApptBtn">➕ Nuovo Appuntamento</button>
+        <h3 class="card-title">Appuntamenti</h3>
+        <button class="btn btn-sm btn-secondary" id="personNewApptBtn">${ico("plus")} Nuovo appuntamento</button>
       </div>
       <div class="table-wrap">
-        <table class="data-table">
-          <thead><tr><th>Data e Ora (Europe/Rome)</th><th>Servizio</th><th>Associazione Pacchetto</th><th>Stato</th><th style="text-align:right;">Azione</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="5">Nessun appuntamento registrato.</td></tr>'}</tbody>
+        <table class="data-table data-table-compact">
+          <thead><tr><th>Data e ora</th><th>Servizio</th><th>Stato</th><th style="text-align:right;"></th></tr></thead>
+          <tbody>${apptRows || `<tr><td colspan="4" style="color:var(--text-muted);">Nessun appuntamento.</td></tr>`}</tbody>
         </table>
       </div>
     </div>
   `;
-  document.getElementById("personNewApptBtn")?.addEventListener("click", () => showNewAppointmentModal(p.id));
-  bindCommonActionButtons(viewport);
-}
-
-// ============================================================================
-// TAB 6: PACCHETTI, PRESENZE E PAGAMENTI (SALDO SEDUTE != SALDO ECONOMICO)
-// ============================================================================
-
-function renderPersonTabPacchetti(viewport, dossier) {
-  const p = dossier.person;
-  const packages = dossier.packages || [];
-
-  const pkgCards = packages
-    .map((pkg) => {
-      const movRows = (pkg.movements || [])
-        .map(
-          (m) => `
-          <tr>
-            <td>#${m.id} (${esc(formatRomeDateTime(m.created_at))})</td>
-            <td>
-              <span class="badge ${m.movement_type === "CONSUME" ? "badge-physio" : "badge-warning"}">
-                ${m.movement_type === "CONSUME" ? "CONSUMO (-1 dal residuo)" : "STORNO TRACCIATO (+1 al residuo)"}
-              </span>
-            </td>
-            <td>${esc(m.reason)} ${m.appointment_id ? `(Appuntamento #${m.appointment_id})` : ""}</td>
-            <td style="font-family:monospace; font-size:11px;">${esc(m.idempotency_key)}</td>
-          </tr>
-        `
-        )
-        .join("");
-
-      return `
-        <div class="card" style="border-left:5px solid var(--primary);">
-          <div class="card-header">
-            <div>
-              <h4 style="margin:0; font-size:17px;">🎟️ ${esc(pkg.name)} <span class="badge badge-neutral">${esc(pkg.status.toUpperCase())}</span></h4>
-              <div style="font-size:12.5px; color:#64748b;">
-                Acquistato il ${esc(pkg.purchased_date)} · Validità: ${esc(pkg.valid_until || "Illimitata")}
-                · Politica disdetta tardiva: <strong>${esc(pkg.late_cancel_policy)}</strong> · Assenza: <strong>${esc(pkg.no_show_policy)}</strong>
-              </div>
-            </div>
-            <div style="display:flex; gap:8px;">
-              ${
-                pkg.due_cents > 0
-                  ? `<button class="btn btn-sm btn-primary" data-record-payment-pkg="${pkg.id}" data-person-id="${p.id}" data-due-cents="${pkg.due_cents}">💶 Registra Pagamento (${formatEur(pkg.due_cents)})</button>`
-                  : `<span class="badge badge-success">✓ Interamente Saldato</span>`
-              }
-              <button class="btn btn-sm btn-secondary" data-pkg-suspend="${pkg.id}" data-pkg-status="${pkg.status}">
-                ${pkg.status === "sospeso" ? "▶️ Riattiva" : "⏸️ Sospendi"}
-              </button>
-            </div>
-          </div>
-
-          <!-- Relazione Matematica Chiara tra i Valori del Pacchetto -->
-          <div class="grid-4" style="margin-bottom:12px;">
-            <div class="stat-card" style="background:var(--bg-subtle);">
-              <div class="stat-label">1. Sedute Acquistate</div>
-              <div class="stat-value">${pkg.total_sessions}</div>
-              <div class="stat-sub">Capienza totale iniziale</div>
-            </div>
-            <div class="stat-card" style="background:var(--bg-subtle);">
-              <div class="stat-label">2. Consumate (Svolte)</div>
-              <div class="stat-value">${pkg.consumed_sessions}</div>
-              <div class="stat-sub">Somma movimenti netti</div>
-            </div>
-            <div class="stat-card" style="background:#f0fdfa; border-color:#5eead4;">
-              <div class="stat-label">3. Residue (${pkg.total_sessions} - ${pkg.consumed_sessions})</div>
-              <div class="stat-value" style="color:var(--primary);">${pkg.remaining_sessions}</div>
-              <div class="stat-sub">Di cui <strong>${pkg.reserved_sessions} riservate</strong> da prenotazioni</div>
-            </div>
-            <div class="stat-card" style="background:#eff6ff; border-color:#93c5fd;">
-              <div class="stat-label">4. Disponibili per nuove prenotazioni</div>
-              <div class="stat-value" style="color:#1d4ed8;">${pkg.available_to_book}</div>
-              <div class="stat-sub">Residue (${pkg.remaining_sessions}) − Prenotate (${pkg.reserved_sessions})</div>
-            </div>
-          </div>
-
-          <div style="background:var(--bg-subtle); padding:10px 12px; border-radius:8px; margin-bottom:10px; display:flex; justify-content:space-between; flex-wrap:wrap;" class="sensitive-data">
-            <div><strong>Saldo Economico (distinto dal saldo sedute):</strong> Prezzo pattuito: <strong>${formatEur(pkg.price_cents)}</strong></div>
-            <div>Incassato: <strong style="color:var(--success);">${formatEur(pkg.paid_cents)}</strong> · Residuo da incassare: <strong style="color:${pkg.due_cents > 0 ? "var(--danger)" : "var(--success)"};">${formatEur(pkg.due_cents)}</strong></div>
-          </div>
-
-          <details>
-            <summary style="cursor:pointer; font-weight:600; font-size:13px; color:var(--primary);">
-              📜 Mostra Movimenti Tracciati e Storni del Pacchetto (${pkg.movements.length})
-            </summary>
-            <div class="table-wrap" style="margin-top:8px;">
-              <table class="data-table">
-                <thead><tr><th>ID / Data</th><th>Tipo Movimento</th><th>Causale / Seduta Collegata</th><th>Chiave Idempotenza</th></tr></thead>
-                <tbody>${movRows || '<tr><td colspan="4">Nessun movimento ancora registrato.</td></tr>'}</tbody>
-              </table>
-            </div>
-          </details>
-        </div>
-      `;
-    })
-    .join("");
-
-  viewport.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
-      <div>
-        <h3 style="margin:0;">🎟️ Pacchetti, Saldi Sedute e Pagamenti</h3>
-        <div style="font-size:12px; color:#64748b;">
-          Riepilogo amministrativo gestionale interno (non costituisce fattura fiscale conforme; nessun dato di carte di pagamento viene memorizzato).
-        </div>
-      </div>
-      <button class="btn btn-primary" id="personNewPkgBtn">➕ Vendi Nuovo Pacchetto</button>
-    </div>
-    ${pkgCards || '<div class="card">Nessun pacchetto acquistato da questa persona.</div>'}
-  `;
 
   document.getElementById("personNewPkgBtn")?.addEventListener("click", () => showNewPackageModal(p.id));
+  document.getElementById("personNewApptBtn")?.addEventListener("click", () => showNewAppointmentModal(p.id));
   viewport.querySelectorAll("[data-pkg-suspend]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const pkgId = Number(btn.getAttribute("data-pkg-suspend"));
-      const curSt = btn.getAttribute("data-pkg-status");
-      const nextSt = curSt === "sospeso" ? "attivo" : "sospeso";
-      await apiFetch(`/api/packages/${pkgId}/status`, {
-        method: "POST",
-        body: { status: nextSt, reason: "Variazione stato manuale dalla scheda" }
-      });
+      const nextSt = btn.getAttribute("data-pkg-status") === "sospeso" ? "attivo" : "sospeso";
+      await apiFetch(`/api/packages/${pkgId}/status`, { method: "POST", body: { status: nextSt, reason: "Modifica stato" } });
       await refreshCurrentView();
     });
   });
@@ -1951,119 +1774,202 @@ function renderPersonTabPacchetti(viewport, dossier) {
 }
 
 // ============================================================================
-// TAB 7: DOCUMENTI, INFORMATIVE PRIVACY E ALLEGATI PRIVATI AUTENTICATI
+// TAB 5: DOCUMENTI, CONSENSI E CRONOLOGIA
 // ============================================================================
 
 function renderPersonTabDocumenti(viewport, dossier) {
   const p = dossier.person;
   const consents = dossier.consents || [];
   const attachments = dossier.attachments || [];
-
-  const consentRows = consents
-    .map(
-      (c) => `
-      <tr>
-        <td><strong>${esc(c.doc_type.replace(/_/g, " ").toUpperCase())}</strong></td>
-        <td>${esc(c.doc_version)}</td>
-        <td><span class="badge ${c.status === "acquisito" ? "badge-success" : "badge-danger"}">${esc(c.status)}</span></td>
-        <td>${esc(c.signed_date || "-")}</td>
-        <td>${esc(c.acquisition_method)}</td>
-        <td>${esc(c.notes || "-")}</td>
-      </tr>
-    `
-    )
-    .join("");
-
-  const attRows = attachments
-    .map(
-      (a) => `
-      <tr>
-        <td><strong>${esc(a.original_filename)}</strong><div style="font-size:11px; color:#64748b;">SHA256: ${esc(a.sha256_hash.slice(0, 16))}...</div></td>
-        <td><span class="badge badge-neutral">${esc(a.category)}</span></td>
-        <td>${(a.size_bytes / 1024).toFixed(1)} KB (${esc(a.mime_type)})</td>
-        <td class="sensitive-data">${esc(a.description || "-")}</td>
-        <td>${esc(formatRomeDateTime(a.uploaded_at))}</td>
-        <td style="text-align:right;">
-          <a class="btn btn-sm btn-secondary" href="${esc(buildAuthUrl(`/attachments/${a.id}`))}" target="_blank">🔒 Apri Allegato Autenticato</a>
-        </td>
-      </tr>
-    `
-    )
-    .join("");
+  const audits = dossier.audit_history || [];
 
   viewport.innerHTML = `
     <div class="card">
       <div class="card-header">
-        <div>
-          <h3 class="card-title">🛡️ Gestione Distinta Informative Privacy e Consenso al Trattamento Sanitario</h3>
-          <div style="font-size:12px; color:#64748b;">
-            Una semplice casella spuntata non basta a dimostrare conformità: registra versione documento, data, modalità di acquisizione e allegato firmato.
-          </div>
-        </div>
-        <button class="btn btn-sm btn-primary" id="addConsentBtn">➕ Registra Informativa / Consenso</button>
+        <h3 class="card-title">Allegati</h3>
+        <button class="btn btn-sm btn-primary" id="uploadAttachmentBtn">${ico("upload")} Carica file</button>
       </div>
       <div class="table-wrap">
-        <table class="data-table">
-          <thead><tr><th>Tipologia Documento</th><th>Versione</th><th>Stato</th><th>Data Firma</th><th>Modalità Acquisizione</th><th>Note</th></tr></thead>
-          <tbody>${consentRows || '<tr><td colspan="6">Nessun documento di consenso registrato.</td></tr>'}</tbody>
+        <table class="data-table data-table-compact">
+          <thead><tr><th>File</th><th>Categoria</th><th>Descrizione</th><th>Data</th><th style="text-align:right;"></th></tr></thead>
+          <tbody>
+            ${
+              attachments.length
+                ? attachments
+                    .map(
+                      (a) => `
+                      <tr>
+                        <td><strong>${esc(a.original_filename)}</strong> <span style="color:var(--text-muted); font-size:11.5px;">(${(a.size_bytes / 1024).toFixed(0)} KB)</span></td>
+                        <td><span class="tag">${esc(a.category)}</span></td>
+                        <td class="sensitive-data">${esc(a.description || "—")}</td>
+                        <td class="num">${formatDateIt(a.uploaded_at)}</td>
+                        <td style="text-align:right;"><a class="btn btn-xs btn-secondary" href="${esc(buildAuthUrl(`/attachments/${a.id}`))}" target="_blank">Apri</a></td>
+                      </tr>`
+                    )
+                    .join("")
+                : `<tr><td colspan="5" style="color:var(--text-muted);">Nessun allegato caricato.</td></tr>`
+            }
+          </tbody>
         </table>
       </div>
     </div>
 
     <div class="card">
       <div class="card-header">
-        <div>
-          <h3 class="card-title">📎 Allegati Privati (PDF e Immagini con Accesso Autenticato)</h3>
-          <div style="font-size:12px; color:#64748b;">
-            Custoditi fuori dalla cartella pubblica; ogni lettura richiede sessione autenticata ed è tracciata nell'audit log.
-          </div>
-        </div>
-        <button class="btn btn-sm btn-primary" id="uploadAttachmentBtn">⬆️ Carica PDF / Immagine</button>
+        <h3 class="card-title">Consensi e informative</h3>
+        <button class="btn btn-sm btn-secondary" id="addConsentBtn">${ico("plus")} Registra consenso</button>
       </div>
       <div class="table-wrap">
-        <table class="data-table">
-          <thead><tr><th>File</th><th>Categoria</th><th>Dimensione</th><th>Descrizione</th><th>Data Caricamento</th><th style="text-align:right;">Accesso</th></tr></thead>
-          <tbody>${attRows || '<tr><td colspan="6">Nessun allegato privato caricato.</td></tr>'}</tbody>
+        <table class="data-table data-table-compact">
+          <thead><tr><th>Documento</th><th>Versione</th><th>Stato</th><th>Data</th><th>Modalità</th></tr></thead>
+          <tbody>
+            ${
+              consents.length
+                ? consents
+                    .map(
+                      (c) => `
+                      <tr>
+                        <td><strong>${esc(c.doc_type.replace(/_/g, " "))}</strong></td>
+                        <td>${esc(c.doc_version)}</td>
+                        <td><span class="tag ${c.status === "acquisito" ? "tag-success" : "tag-danger"}">${esc(c.status)}</span></td>
+                        <td class="num">${formatDateIt(c.signed_date)}</td>
+                        <td style="color:var(--text-muted);">${esc(c.acquisition_method)}</td>
+                      </tr>`
+                    )
+                    .join("")
+                : `<tr><td colspan="5" style="color:var(--text-muted);">Nessun consenso registrato.</td></tr>`
+            }
+          </tbody>
         </table>
       </div>
     </div>
+
+    <details class="clean-details">
+      <summary>
+        <span>Cronologia operazioni (${audits.length})</span>
+        ${ico("chevronDown")}
+      </summary>
+      <div class="details-body">
+        <div class="table-wrap">
+          <table class="data-table data-table-compact">
+            <thead><tr><th>Data</th><th>Azione</th><th>Dettaglio</th></tr></thead>
+            <tbody>
+              ${
+                audits.length
+                  ? audits
+                      .map(
+                        (a) =>
+                          `<tr><td class="num">${formatRomeDateTime(a.timestamp)}</td><td><span class="tag">${esc(a.action)}</span></td><td class="sensitive-data">${esc(a.summary)}</td></tr>`
+                      )
+                      .join("")
+                  : `<tr><td colspan="3" style="color:var(--text-muted);">Nessuna operazione.</td></tr>`
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </details>
   `;
 
   document.getElementById("addConsentBtn")?.addEventListener("click", () => showAddConsentModal(p.id));
   document.getElementById("uploadAttachmentBtn")?.addEventListener("click", () => showUploadAttachmentModal(p.id));
 }
 
-// --- TAB 8: CRONOLOGIA OPERAZIONI (AUDIT LOG) ---
-function renderPersonTabCronologia(viewport, dossier) {
-  const rows = (dossier.audit_history || [])
+// ============================================================================
+// 3. VISTA GLOBALE PACCHETTI
+// ============================================================================
+
+async function renderPackagesView(container) {
+  const data = await apiFetch("/api/packages");
+  const packages = data.packages || [];
+
+  const activeCount = packages.filter((k) => k.status === "attivo").length;
+  const remainingTotal = packages.filter((k) => k.status === "attivo").reduce((a, k) => a + Number(k.remaining_sessions || 0), 0);
+  const dueTotal = packages.filter((k) => k.status !== "annullato").reduce((a, k) => a + Number(k.due_cents || 0), 0);
+
+  const rows = packages
     .map(
-      (a) => `
+      (pkg) => `
       <tr>
-        <td>${esc(formatRomeDateTime(a.timestamp))}</td>
-        <td><span class="badge badge-neutral">${esc(a.action)}</span></td>
-        <td>${esc(a.actor)}</td>
-        <td class="sensitive-data">${esc(a.summary)}</td>
-      </tr>
-    `
+        <td>
+          <a href="#" data-open-person="${pkg.person_id}" data-person-tab="pacchetti" style="font-weight:600; color:var(--text); text-decoration:none;" class="sensitive-data">
+            ${esc(pkg.last_name)} ${esc(pkg.first_name)}
+          </a>
+        </td>
+        <td><strong>${esc(pkg.name)}</strong> <span class="tag" style="margin-left:4px;">${esc(pkg.service_area)}</span></td>
+        <td class="num"><strong>${pkg.consumed_sessions}</strong> / ${pkg.total_sessions} <span style="color:var(--text-muted);">(${pkg.remaining_sessions} residue)</span></td>
+        <td class="num sensitive-data">
+          ${formatEur(pkg.price_cents)}
+          ${
+            pkg.due_cents > 0
+              ? ` · <span style="color:var(--danger); font-weight:600;">Da incassare ${formatEur(pkg.due_cents)}</span>`
+              : ` · <span style="color:var(--success);">Saldato</span>`
+          }
+        </td>
+        <td style="text-align:right; white-space:nowrap;">
+          ${
+            pkg.due_cents > 0
+              ? `<button class="btn btn-xs btn-primary" data-record-payment-pkg="${pkg.id}" data-person-id="${pkg.person_id}" data-due-cents="${pkg.due_cents}">Incassa</button>`
+              : ""
+          }
+          <button class="btn btn-xs btn-ghost" data-open-person="${pkg.person_id}" data-person-tab="pacchetti">Scheda</button>
+        </td>
+      </tr>`
     )
     .join("");
 
-  viewport.innerHTML = `
-    <div class="card">
-      <div class="card-header"><h3 class="card-title">🕒 Cronologia Tracciata delle Operazioni Rilevanti</h3></div>
+  container.innerHTML = `
+    <div class="page-header">
+      <h1 class="page-title">Pacchetti <span class="count-pill num">${packages.length}</span></h1>
+      <button class="btn btn-primary" id="globalNewPkgBtn">${ico("plus")} <span>Nuovo pacchetto</span></button>
+    </div>
+
+    <div class="grid-3" style="margin-bottom:16px;">
+      <div class="stat-card"><div class="stat-label">Pacchetti attivi</div><div class="stat-value">${activeCount}</div></div>
+      <div class="stat-card"><div class="stat-label">Sedute residue</div><div class="stat-value">${remainingTotal}</div></div>
+      <div class="stat-card sensitive-data">
+        <div class="stat-label">Da incassare</div>
+        <div class="stat-value" style="color:${dueTotal > 0 ? "var(--danger)" : "var(--text)"};">${formatEur(dueTotal)}</div>
+      </div>
+    </div>
+
+    <div class="card card-flush">
       <div class="table-wrap">
         <table class="data-table">
-          <thead><tr><th>Data e Ora (Europe/Rome)</th><th>Operazione</th><th>Operatore</th><th>Dettaglio</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="4">Nessuna operazione registrata.</td></tr>'}</tbody>
+          <thead>
+            <tr>
+              <th>Persona</th>
+              <th>Pacchetto</th>
+              <th>Sedute</th>
+              <th>Saldo</th>
+              <th style="text-align:right;"></th>
+            </tr>
+          </thead>
+          <tbody>${rows || `<tr><td colspan="5" class="empty-state">Nessun pacchetto registrato.</td></tr>`}</tbody>
         </table>
       </div>
     </div>
   `;
+
+  document.getElementById("globalNewPkgBtn")?.addEventListener("click", () => showNewPackageModal());
+  bindCommonActionButtons(container);
 }
 
 // ============================================================================
-// 4. VISTA AGENDA UNIFICATA (GIORNO, SETTIMANA, MESE, LISTA IPHONE + DRAWER SEDUTA)
+// 4. AGENDA (SECONDARIA, PULITA)
 // ============================================================================
+
+function renderApptStatusBadge(status) {
+  const map = {
+    prenotato: { cls: "tag", label: "Prenotato" },
+    confermato: { cls: "tag tag-accent", label: "Confermato" },
+    svolto: { cls: "tag tag-success", label: "Svolto" },
+    annullato: { cls: "tag tag-warning", label: "Annullato" },
+    assente: { cls: "tag tag-danger", label: "Assente" }
+  };
+  const info = map[status] || { cls: "tag", label: status };
+  return `<span class="${info.cls}">${esc(info.label)}</span>`;
+}
 
 async function renderAgendaView(container) {
   const baseDate = new Date(`${state.agendaDate}T12:00:00`);
@@ -2071,7 +1977,7 @@ async function renderAgendaView(container) {
   let toDate = state.agendaDate;
 
   if (state.agendaViewMode === "week") {
-    const dayOfWeek = (baseDate.getDay() + 6) % 7; // Lunedì = 0
+    const dayOfWeek = (baseDate.getDay() + 6) % 7;
     const mon = new Date(baseDate);
     mon.setDate(baseDate.getDate() - dayOfWeek);
     const sun = new Date(mon);
@@ -2087,8 +1993,6 @@ async function renderAgendaView(container) {
     `/api/appointments?from=${encodeURIComponent(fromDate)}&to=${encodeURIComponent(toDate)}&area=${encodeURIComponent(state.agendaAreaFilter)}`
   );
   const appts = data.appointments || [];
-
-  // Raggruppa per giorno YYYY-MM-DD
   const byDay = {};
   for (const a of appts) {
     const dKey = a.start_at.slice(0, 10);
@@ -2096,124 +2000,96 @@ async function renderAgendaView(container) {
     byDay[dKey].push(a);
   }
 
-  let calendarBodyHtml = "";
+  let bodyHtml = "";
   if (state.agendaViewMode === "week") {
-    const dayCols = [];
     const startMon = new Date(`${fromDate}T12:00:00`);
+    const cols = [];
     for (let i = 0; i < 7; i++) {
       const cur = new Date(startMon);
       cur.setDate(startMon.getDate() + i);
       const dStr = cur.toISOString().slice(0, 10);
-      const dayLabel = cur.toLocaleDateString("it-IT", { weekday: "short", day: "2-digit", month: "2-digit" });
-      const dayItems = (byDay[dStr] || [])
+      const label = cur.toLocaleDateString("it-IT", { weekday: "short", day: "2-digit", month: "2-digit" });
+      const items = (byDay[dStr] || [])
         .map(
           (a) => `
-          <div
-            data-open-appt-drawer="${a.id}"
-            style="padding:8px; margin-bottom:8px; border-radius:8px; cursor:pointer; border-left:4px solid ${a.service_area === "fisio" ? "var(--physio-accent)" : "var(--fitness-accent)"}; background:${a.status === "svolto" ? "#dcfce7" : "#f8fafc"}; border-top:1px solid #cbd5e1; border-right:1px solid #cbd5e1; border-bottom:1px solid #cbd5e1;"
-          >
-            <div style="font-size:12px; font-weight:700;">${formatRomeTime(a.start_at)} – ${formatRomeTime(a.end_at)}</div>
-            <div style="font-weight:700; font-size:13.5px;" class="sensitive-data">${esc(a.first_name)} ${esc(a.last_name)}</div>
-            <div style="font-size:11.5px; color:#475569;">${a.service_area === "fisio" ? "🩺" : "🏋️"} ${esc(a.service_name)}</div>
+          <div class="agenda-item" data-open-appt-drawer="${a.id}">
+            <div class="num" style="font-size:11.5px; font-weight:600; color:var(--text-muted);">${formatRomeTime(a.start_at)} – ${formatRomeTime(a.end_at)}</div>
+            <div style="font-weight:600; font-size:13px;" class="sensitive-data">${esc(a.first_name)} ${esc(a.last_name)}</div>
+            <div style="font-size:11.5px; color:var(--text-muted);">${esc(a.service_name)}</div>
             <div style="margin-top:4px;">${renderApptStatusBadge(a.status)}</div>
-          </div>
-        `
+          </div>`
         )
         .join("");
-      dayCols.push(`
-        <div style="background:var(--bg-surface); border:1px solid var(--border-color); border-radius:10px; padding:10px; min-height:220px;">
-          <div style="font-weight:800; font-size:13px; padding-bottom:6px; margin-bottom:8px; border-bottom:2px solid ${dStr === state.agendaDate ? "var(--primary)" : "var(--border-color)"};">
-            ${esc(dayLabel.toUpperCase())}
-          </div>
-          ${dayItems || '<div style="font-size:12px; color:#94a3b8;">Nessun impegno</div>'}
-        </div>
-      `);
+      cols.push(`
+        <div class="agenda-day-col">
+          <div class="agenda-day-header ${dStr === state.agendaDate ? "is-today" : ""}">${esc(label)}</div>
+          ${items || `<div style="font-size:12px; color:var(--text-muted);">—</div>`}
+        </div>`);
     }
-    calendarBodyHtml = `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(175px, 1fr)); gap:10px;">${dayCols.join("")}</div>`;
+    bodyHtml = `<div class="agenda-week-grid">${cols.join("")}</div>`;
   } else {
-    // Vista Giorno, Mese o Lista Giornaliera Mobile (iPhone)
-    const sortedDays = Object.keys(byDay).sort();
-    calendarBodyHtml = sortedDays.length
-      ? sortedDays
-          .map((dKey) => {
-            const listItems = byDay[dKey]
-              .map(
-                (a) => `
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding:12px; border:1px solid var(--border-color); border-radius:10px; margin-bottom:8px; background:var(--bg-surface);">
-                  <div>
-                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                      <strong style="font-size:16px;">🕒 ${formatRomeTime(a.start_at)} – ${formatRomeTime(a.end_at)}</strong>
-                      <span class="badge ${a.service_area === "fisio" ? "badge-physio" : "badge-fitness"}">
-                        ${a.service_area === "fisio" ? "🩺 FISIO" : "🏋️ FITNESS"}
-                      </span>
-                      ${renderApptStatusBadge(a.status)}
-                      ${a.recurrence_group_id ? `<span class="badge badge-neutral">🔁 Ricorrente</span>` : ""}
+    const days = Object.keys(byDay).sort();
+    bodyHtml = days.length
+      ? days
+          .map(
+            (dKey) => `
+            <div class="card">
+              <div class="card-header"><h3 class="card-title num">${formatDateIt(dKey)}</h3></div>
+              ${byDay[dKey]
+                .map(
+                  (a) => `
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--border); flex-wrap:wrap;">
+                    <div>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <strong class="num">${formatRomeTime(a.start_at)} – ${formatRomeTime(a.end_at)}</strong>
+                        <span class="tag ${a.service_area === "fisio" ? "tag-accent" : ""}">${a.service_area === "fisio" ? "Fisio" : "PT"}</span>
+                        ${renderApptStatusBadge(a.status)}
+                      </div>
+                      <div style="font-weight:600; margin-top:2px;" class="sensitive-data">${esc(a.first_name)} ${esc(a.last_name)} · <span style="font-weight:400; color:var(--text-secondary);">${esc(a.service_name)}</span></div>
                     </div>
-                    <div style="font-size:16px; font-weight:700; margin-top:4px;" class="sensitive-data">
-                      ${esc(a.first_name)} ${esc(a.last_name)} — <span style="font-weight:500;">${esc(a.service_name)}</span>
+                    <div style="display:flex; gap:6px;">
+                      <button class="btn btn-sm btn-secondary" data-open-appt-drawer="${a.id}">Gestisci</button>
+                      <button class="btn btn-sm btn-ghost" data-open-person="${a.person_id}">Scheda</button>
                     </div>
-                    <div style="font-size:12.5px; color:#64748b;">
-                      📍 ${esc(a.location)} · ${a.package_name ? `🎟️ ${esc(a.package_name)}` : "Fuori pacchetto"}
-                    </div>
-                  </div>
-                  <div style="display:flex; gap:8px;">
-                    <button class="btn btn-primary" data-open-appt-drawer="${a.id}">⚡ Azioni Seduta / Presenza</button>
-                    <button class="btn btn-secondary" data-open-person="${a.person_id}">Scheda</button>
-                  </div>
-                </div>
-              `
-              )
-              .join("");
-            return `
-              <div class="card">
-                <h3 style="margin:0 0 10px 0; font-size:16px; color:var(--primary);">📆 Giorno: ${esc(dKey)}</h3>
-                ${listItems}
-              </div>
-            `;
-          })
+                  </div>`
+                )
+                .join("")}
+            </div>`
+          )
           .join("")
-      : `<div class="card">Nessun appuntamento nel periodo selezionato (${esc(fromDate)} → ${esc(toDate)}).</div>`;
+      : `<div class="card"><div class="empty-state">Nessun appuntamento nel periodo selezionato.</div></div>`;
   }
 
   container.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
-      <div>
-        <h1 style="margin:0; font-size:22px;">Agenda Unificata Fisio &amp; Fitness</h1>
-        <div style="font-size:13px; color:#64748b;">Fuso orario: <strong>Europe/Rome</strong> (gestione ora legale CET/CEST) · Periodo: ${esc(fromDate)} → ${esc(toDate)}</div>
-      </div>
+    <div class="page-header">
+      <h1 class="page-title">Agenda</h1>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <a class="btn btn-sm btn-secondary" href="${esc(buildAuthUrl("/api/appointments/export.ics?privacy=initials_only"))}" target="_blank">
-          🍎 Esporta .ics (Apple Calendar Privacy-Safe)
-        </a>
-        <button class="btn btn-primary" id="agendaNewApptBtn">➕ Nuovo Appuntamento</button>
+        <a class="btn btn-sm btn-secondary" href="${esc(buildAuthUrl("/api/appointments/export.ics?privacy=initials_only"))}" target="_blank">${ico("download")} Esporta .ics</a>
+        <button class="btn btn-primary" id="agendaNewApptBtn">${ico("plus")} <span>Nuovo appuntamento</span></button>
       </div>
     </div>
 
-    <div class="card" style="padding:12px;">
+    <div class="card" style="padding:12px 14px;">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-        <div style="display:flex; gap:6px; flex-wrap:wrap;">
-          <button class="btn btn-sm ${state.agendaViewMode === "day" ? "btn-primary" : "btn-secondary"}" data-agenda-mode="day">Giorno</button>
-          <button class="btn btn-sm ${state.agendaViewMode === "week" ? "btn-primary" : "btn-secondary"}" data-agenda-mode="week">Settimana</button>
-          <button class="btn btn-sm ${state.agendaViewMode === "month" ? "btn-primary" : "btn-secondary"}" data-agenda-mode="month">Mese</button>
-          <button class="btn btn-sm ${state.agendaViewMode === "iphone_list" ? "btn-primary" : "btn-secondary"}" data-agenda-mode="iphone_list">📱 Lista Giornaliera</button>
+        <div class="segmented">
+          <button class="seg-btn ${state.agendaViewMode === "week" ? "active" : ""}" data-agenda-mode="week">Settimana</button>
+          <button class="seg-btn ${state.agendaViewMode === "day" ? "active" : ""}" data-agenda-mode="day">Giorno</button>
+          <button class="seg-btn ${state.agendaViewMode === "month" ? "active" : ""}" data-agenda-mode="month">Mese</button>
+          <button class="seg-btn ${state.agendaViewMode === "iphone_list" ? "active" : ""}" data-agenda-mode="iphone_list">Lista</button>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <input type="date" class="form-control" id="agendaDatePicker" value="${esc(state.agendaDate)}" style="width:auto;" />
-          <select class="form-control" id="agendaAreaSelect" style="width:auto;">
-            <option value="tutti" ${state.agendaAreaFilter === "tutti" ? "selected" : ""}>Tutte le aree (Fisio + Fitness)</option>
-            <option value="fisio" ${state.agendaAreaFilter === "fisio" ? "selected" : ""}>Solo Fisioterapia</option>
-            <option value="fitness" ${state.agendaAreaFilter === "fitness" ? "selected" : ""}>Solo Personal Training</option>
+          <input type="date" class="form-control form-control-sm" id="agendaDatePicker" value="${esc(state.agendaDate)}" style="width:auto;" />
+          <button class="btn btn-sm btn-secondary" id="agendaTodayBtn">Oggi</button>
+          <select class="form-control form-control-sm" id="agendaAreaSelect" style="width:auto;">
+            <option value="tutti" ${state.agendaAreaFilter === "tutti" ? "selected" : ""}>Tutte</option>
+            <option value="fisio" ${state.agendaAreaFilter === "fisio" ? "selected" : ""}>Fisio</option>
+            <option value="fitness" ${state.agendaAreaFilter === "fitness" ? "selected" : ""}>PT</option>
           </select>
         </div>
       </div>
     </div>
 
-    ${calendarBodyHtml}
-
-    <div class="card" style="background:var(--bg-subtle); font-size:12.5px; color:#475569;">
-      <strong>ℹ️ Nota sull'integrazione con Apple Calendar:</strong>
-      L'agenda interna è la fonte principale. Il pulsante <em>Esporta .ics</em> genera un file standard iCalendar con <strong>sole iniziali</strong> (nessun dettaglio clinico o diagnosi nei titoli/notifiche). Nessun messaggio automatico viene mai inviato ai clienti.
-    </div>
+    ${bodyHtml}
   `;
 
   container.querySelectorAll("[data-agenda-mode]").forEach((btn) => {
@@ -2226,6 +2102,10 @@ async function renderAgendaView(container) {
     state.agendaDate = e.target.value;
     await renderAgendaView(container);
   });
+  document.getElementById("agendaTodayBtn")?.addEventListener("click", async () => {
+    state.agendaDate = todayRomeStr();
+    await renderAgendaView(container);
+  });
   document.getElementById("agendaAreaSelect")?.addEventListener("change", async (e) => {
     state.agendaAreaFilter = e.target.value;
     await renderAgendaView(container);
@@ -2235,89 +2115,7 @@ async function renderAgendaView(container) {
 }
 
 // ============================================================================
-// 5. VISTA GLOBALE PACCHETTI E AMMINISTRAZIONE
-// ============================================================================
-
-async function renderPackagesView(container) {
-  const data = await apiFetch("/api/packages");
-  const packages = data.packages || [];
-
-  const rows = packages
-    .map(
-      (pkg) => `
-      <tr>
-        <td>
-          <a href="#" data-open-person="${pkg.person_id}" data-person-tab="pacchetti" style="font-weight:700; color:var(--primary); text-decoration:none;" class="sensitive-data">
-            ${esc(pkg.first_name)} ${esc(pkg.last_name)}
-          </a>
-        </td>
-        <td><strong>${esc(pkg.name)}</strong> <span class="badge badge-neutral">${esc(pkg.service_area)}</span></td>
-        <td><strong>${pkg.total_sessions}</strong></td>
-        <td>${pkg.consumed_sessions}</td>
-        <td><strong>${pkg.remaining_sessions}</strong></td>
-        <td>${pkg.reserved_sessions}</td>
-        <td><span class="badge ${pkg.available_to_book > 0 ? "badge-success" : "badge-warning"}">${pkg.available_to_book} disponibili</span></td>
-        <td class="sensitive-data">
-          Prezzo: ${formatEur(pkg.price_cents)}<br>
-          <span style="color:${pkg.due_cents > 0 ? "var(--danger)" : "var(--success)"}; font-weight:700;">
-            ${pkg.due_cents > 0 ? `Da incassare: ${formatEur(pkg.due_cents)}` : "Saldato"}
-          </span>
-        </td>
-        <td style="text-align:right;">
-          ${
-            pkg.due_cents > 0
-              ? `<button class="btn btn-sm btn-primary" data-record-payment-pkg="${pkg.id}" data-person-id="${pkg.person_id}" data-due-cents="${pkg.due_cents}">💶 Incassa</button>`
-              : ""
-          }
-          <button class="btn btn-sm btn-secondary" data-open-person="${pkg.person_id}" data-person-tab="pacchetti">Dettagli</button>
-        </td>
-      </tr>
-    `
-    )
-    .join("");
-
-  container.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
-      <div>
-        <h1 style="margin:0; font-size:22px;">Pacchetti, Presenze e Riepilogo Amministrativo</h1>
-        <div style="font-size:13px; color:#64748b;">
-          Relazione rigorosa: <strong>Residue = Acquistate − Consumate</strong> · <strong>Disponibili = Residue − Prenotate (Riservate)</strong>.
-        </div>
-      </div>
-      <button class="btn btn-primary" id="globalNewPkgBtn">➕ Nuovo Pacchetto</button>
-    </div>
-
-    <div class="card">
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Persona</th>
-              <th>Pacchetto</th>
-              <th>Acquistate</th>
-              <th>Consumate</th>
-              <th>Residue</th>
-              <th>Prenotate</th>
-              <th>Disponibili</th>
-              <th>Saldo Economico</th>
-              <th style="text-align:right;">Azioni</th>
-            </tr>
-          </thead>
-          <tbody>${rows || '<tr><td colspan="9">Nessun pacchetto registrato.</td></tr>'}</tbody>
-        </table>
-      </div>
-      <div style="margin-top:10px; font-size:12px; color:#64748b;">
-        ⚠️ <strong>Avvertenza fiscale:</strong> Il presente riepilogo ha esclusiva finalità di controllo gestionale interno e non sostituisce la fatturazione elettronica/sanitaria né l'invio al Sistema Tessera Sanitaria (STS). Nessun dato di carte di credito/debito viene mai memorizzato.
-      </div>
-    </div>
-  `;
-
-  document.getElementById("globalNewPkgBtn")?.addEventListener("click", () => showNewPackageModal());
-  bindCommonActionButtons(container);
-}
-
-// ============================================================================
-// 6. VISTA SICUREZZA, SECONDO FATTORE 2FA, BACKUP CIFRATI E CHECKLIST GDPR
+// 5. IMPOSTAZIONI (ACCOUNT, 2FA, BACKUP — ESSENZIALE)
 // ============================================================================
 
 async function renderSecurityView(container) {
@@ -2327,33 +2125,27 @@ async function renderSecurityView(container) {
       (b) => `
       <tr>
         <td><strong>${esc(b.backup_id)}</strong></td>
-        <td>${esc(formatRomeDateTime(b.created_at))}</td>
-        <td>${(b.size_bytes / 1024).toFixed(1)} KB (${b.attachments_count} allegati)</td>
-        <td style="font-family:monospace; font-size:11px;">HMAC: ${esc((b.hmac_sha256 || "").slice(0, 16))}...</td>
-        <td style="text-align:right;">
-          <button class="btn btn-sm btn-secondary" data-verify-backup="${esc(b.encrypted_filename)}">🧪 Verifica Ripristino di Prova</button>
-        </td>
-      </tr>
-    `
+        <td class="num">${formatRomeDateTime(b.created_at)}</td>
+        <td class="num">${(b.size_bytes / 1024).toFixed(0)} KB</td>
+        <td style="text-align:right;"><button class="btn btn-xs btn-secondary" data-verify-backup="${esc(b.encrypted_filename)}">Verifica</button></td>
+      </tr>`
     )
     .join("");
 
   container.innerHTML = `
-    <div style="margin-bottom:14px;">
-      <h1 style="margin:0; font-size:22px;">Sicurezza, Backup Cifrati e Tutela Dati Sanitari</h1>
-      <div style="font-size:13px; color:#64748b;">Ambiente attivo: <strong>${esc(sec.env_mode.toUpperCase())}</strong> · Registrazione pubblica disabilitata</div>
+    <div class="page-header">
+      <h1 class="page-title">Impostazioni</h1>
     </div>
 
-    <!-- Credenziali Account (Username, Nome Visualizzato, Password) -->
-    <div class="card" style="margin-bottom:16px;">
+    <div class="card">
       <div class="card-header">
-        <h3 class="card-title">👤 Credenziali Account (Username e Password)</h3>
-        <span class="badge badge-neutral">Utente: ${esc(sec.username || state.user?.username || "")}</span>
+        <h3 class="card-title">Credenziali account</h3>
+        <span class="tag">${esc(sec.username || state.user?.username || "")}</span>
       </div>
       <form id="updateCredentialsForm">
         <div class="grid-3">
           <div class="form-group">
-            <label class="form-label">Nome utente (Username)</label>
+            <label class="form-label">Nome utente</label>
             <input class="form-control" id="credUsernameInput" value="${esc(sec.username || state.user?.username || "")}" required minlength="3" />
           </div>
           <div class="form-group">
@@ -2361,121 +2153,81 @@ async function renderSecurityView(container) {
             <input class="form-control" id="credDisplayNameInput" value="${esc(sec.display_name || state.user?.display_name || "")}" />
           </div>
           <div class="form-group">
-            <label class="form-label">Password attuale (richiesta per salvare)</label>
-            <input type="password" class="form-control" id="credCurrentPasswordInput" placeholder="Password attuale" required autocomplete="current-password" />
+            <label class="form-label">Password attuale *</label>
+            <input type="password" class="form-control" id="credCurrentPasswordInput" required autocomplete="current-password" />
           </div>
         </div>
-        <div class="grid-2" style="margin-top:8px;">
+        <div class="grid-2">
           <div class="form-group">
             <label class="form-label">Nuova password (opzionale, min. 10 caratteri)</label>
-            <input type="password" class="form-control" id="credNewPasswordInput" placeholder="Lascia vuoto per non cambiarla" autocomplete="new-password" />
+            <input type="password" class="form-control" id="credNewPasswordInput" autocomplete="new-password" />
           </div>
           <div class="form-group">
             <label class="form-label">Conferma nuova password</label>
-            <input type="password" class="form-control" id="credConfirmPasswordInput" placeholder="Ripeti la nuova password" autocomplete="new-password" />
+            <input type="password" class="form-control" id="credConfirmPasswordInput" autocomplete="new-password" />
           </div>
         </div>
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
           <div id="credentialsResultBox" style="font-size:13px;"></div>
-          <button type="submit" class="btn btn-primary">💾 Salva Credenziali</button>
+          <button type="submit" class="btn btn-primary">Salva credenziali</button>
         </div>
       </form>
     </div>
 
     <div class="grid-2">
-      <!-- 2FA TOTP -->
       <div class="card">
         <div class="card-header">
-          <h3 class="card-title">🔐 Autenticazione e Secondo Fattore (2FA TOTP RFC 6238)</h3>
-          <span class="badge ${sec.totp_enabled ? "badge-success" : "badge-warning"}">
-            ${sec.totp_enabled ? "✓ 2FA TOTP Attivo" : "2FA TOTP Disattivato"}
-          </span>
+          <h3 class="card-title">Autenticazione 2FA</h3>
+          <span class="tag ${sec.totp_enabled ? "tag-success" : ""}">${sec.totp_enabled ? "Attiva" : "Disattiva"}</span>
         </div>
-        <p style="font-size:13.5px; color:#334155;">
-          Configura il segreto TOTP nella tua app di autenticazione (Apple Passwords, Google Authenticator, 1Password, Authy):
-        </p>
-        <div style="background:var(--bg-subtle); padding:10px; border-radius:6px; font-family:monospace; font-size:13px; border:1px solid var(--border-color); margin-bottom:10px;">
-          <div><strong>Segreto Base32:</strong> ${esc(sec.totp_secret)}</div>
-          <div style="font-size:11px; color:#64748b; word-break:break-all; margin-top:4px;">${esc(sec.otpauth_uri)}</div>
-          ${
-            sec.current_totp_demo_hint
-              ? `<div style="margin-top:6px; color:var(--primary); font-weight:700;">Codice TOTP attuale (visibile in DEMO per test rapido): ${esc(sec.current_totp_demo_hint)}</div>`
-              : ""
-          }
+        <div style="background:var(--bg-hover); border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px; font-family:monospace; font-size:12.5px; margin-bottom:12px;">
+          <div>Segreto: <strong>${esc(sec.totp_secret)}</strong></div>
         </div>
-        <form id="toggleTotpForm" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+        <form id="toggleTotpForm" style="display:flex; gap:8px; align-items:flex-end;">
           <div class="form-group" style="margin:0; flex:1;">
-            <label class="form-label">Codice TOTP a 6 cifre</label>
+            <label class="form-label">Codice TOTP (6 cifre)</label>
             <input class="form-control" id="totpVerifyInput" value="${esc(sec.current_totp_demo_hint || "")}" placeholder="123456" />
           </div>
-          <button type="submit" class="btn ${sec.totp_enabled ? "btn-danger" : "btn-primary"}">
-            ${sec.totp_enabled ? "Disattiva 2FA" : "Verifica e Attiva 2FA"}
-          </button>
+          <button type="submit" class="btn ${sec.totp_enabled ? "btn-danger" : "btn-primary"}">${sec.totp_enabled ? "Disattiva" : "Attiva 2FA"}</button>
         </form>
         <div id="recoveryCodesBox" style="margin-top:10px;"></div>
       </div>
 
-      <!-- Backup Automatici Cifrati e Ripristino Verificato -->
       <div class="card">
         <div class="card-header">
-          <h3 class="card-title">💾 Backup Cifrati (AES-256) e Ripristino Verificato</h3>
+          <h3 class="card-title">Backup cifrati</h3>
           <div style="display:flex; gap:6px;">
-            <button class="btn btn-sm btn-primary" id="createBackupBtn">🔒 Crea Backup Cifrato Ora</button>
-            <button class="btn btn-sm btn-secondary" id="verifyLatestBackupBtn">🧪 Verifica Ripristino</button>
+            <button class="btn btn-sm btn-primary" id="createBackupBtn">Crea backup</button>
+            <button class="btn btn-sm btn-secondary" id="verifyLatestBackupBtn">Verifica</button>
           </div>
         </div>
-        <p style="font-size:13px; color:#475569; margin-top:0;">
-          Il backup salva un'immagine consistente del database SQLite e tutti gli allegati privati, cifrata con <strong>AES-256-CBC + PBKDF2 (600.000 iterazioni) + firma HMAC-SHA256</strong>.
-          È distinto dall'esportazione PDF/JSON della singola scheda.
-        </p>
         <div id="backupVerifyResultBox" style="margin-bottom:10px;"></div>
         <div class="table-wrap">
-          <table class="data-table">
-            <thead><tr><th>ID Backup</th><th>Data</th><th>Dimensione</th><th>Integrità</th><th style="text-align:right;">Test Ripristino</th></tr></thead>
-            <tbody>${bkpRows || '<tr><td colspan="5">Nessun backup ancora generato. Clicca su "Crea Backup Cifrato Ora".</td></tr>'}</tbody>
+          <table class="data-table data-table-compact">
+            <thead><tr><th>ID</th><th>Data</th><th>Dim.</th><th></th></tr></thead>
+            <tbody>${bkpRows || `<tr><td colspan="4" style="color:var(--text-muted);">Nessun backup presente.</td></tr>`}</tbody>
           </table>
         </div>
       </div>
-    </div>
-
-    <!-- Checklist GDPR e Aspetti da Verificare prima dell'Uso con Dati Reali -->
-    <div class="card" style="border-left:5px solid var(--warning);">
-      <h3 style="margin-top:0;">⚖️ Aspetti da Verificare Prima dell'Uso con Dati Reali (Protezione Dati Sanitari &amp; GDPR)</h3>
-      <p style="font-size:13.5px; color:#334155;">
-        Il software implementa misure tecniche di protezione (autenticazione robusta + 2FA, minimizzazione, separazione contesti Fisio/Fitness, storage allegati privato, cifratura backup AES-256, assenza di cache offline per dati clinici, zero analytics/AI esterne). Tuttavia, <strong>la conformità normativa non dipende dal solo codice</strong>: prima di passare dall'ambiente <code>demo</code> all'ambiente <code>prod</code> con pazienti reali, verifica:
-      </p>
-      <ul style="font-size:13.5px; color:#334155; line-height:1.6;">
-        <li><strong>Informativa e Consenso Sanitario:</strong> utilizza i testi redatti dal tuo consulente privacy/ordine professionale, distinguendo la presa visione dell'Informativa Privacy dal Consenso al Trattamento dei Dati Sanitari.</li>
-        <li><strong>Localizzazione e Fornitori (Hosting / VPS):</strong> se esponi l'app su rete per sincronizzare Mac, iPad e iPhone, utilizza una rete privata cifrata (es. Tailscale sul tuo Mac) oppure un server VPS situato esclusivamente nell'<strong>Unione Europea</strong> con sottoscrizione del DPA (art. 28 GDPR) e certificato TLS/HTTPS attivo.</li>
-        <li><strong>Custodia Separata delle Chiavi:</strong> conserva la passphrase di cifratura dei backup (presente in <code>data/secrets.json</code>) e i codici di recupero 2FA in un gestore password esterno e sicuro.</li>
-        <li><strong>Separazione Ambiente di Prova / Reale:</strong> avvia con <code>GESTIONALE_ENV=prod python3 run.py</code> per operare su un database pulito e fisicamente separato dai presenti dati fittizi.</li>
-      </ul>
     </div>
   `;
 
   document.getElementById("updateCredentialsForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const box = document.getElementById("credentialsResultBox");
-    const username = document.getElementById("credUsernameInput").value.trim();
-    const displayName = document.getElementById("credDisplayNameInput").value.trim();
-    const currentPassword = document.getElementById("credCurrentPasswordInput").value;
     const newPassword = document.getElementById("credNewPasswordInput").value;
     const confirmPassword = document.getElementById("credConfirmPasswordInput").value;
-
     if (newPassword && newPassword !== confirmPassword) {
-      if (box) {
-        box.innerHTML = `<span style="color:var(--danger); font-weight:600;">Le nuove password non coincidono.</span>`;
-      }
+      box.innerHTML = `<span style="color:var(--danger);">Le nuove password non coincidono.</span>`;
       return;
     }
-
     try {
       const res = await apiFetch("/api/security/credentials", {
         method: "POST",
         body: {
-          username,
-          display_name: displayName,
-          current_password: currentPassword,
+          username: document.getElementById("credUsernameInput").value.trim(),
+          display_name: document.getElementById("credDisplayNameInput").value.trim(),
+          current_password: document.getElementById("credCurrentPasswordInput").value,
           new_password: newPassword
         }
       });
@@ -2485,29 +2237,24 @@ async function renderSecurityView(container) {
       }
       await renderSecurityView(container);
       const updatedBox = document.getElementById("credentialsResultBox");
-      if (updatedBox) {
-        updatedBox.innerHTML = `<span style="color:#15803d; font-weight:600;">✓ Credenziali aggiornate con successo!</span>`;
-      }
+      if (updatedBox) updatedBox.innerHTML = `<span style="color:var(--success); font-weight:500;">Credenziali aggiornate.</span>`;
     } catch (err) {
-      if (box) {
-        box.innerHTML = `<span style="color:var(--danger); font-weight:600;">${esc(err.message || "Errore durante l'aggiornamento.")}</span>`;
-      }
+      box.innerHTML = `<span style="color:var(--danger);">${esc(err.message)}</span>`;
     }
   });
 
   document.getElementById("toggleTotpForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const code = document.getElementById("totpVerifyInput").value;
     const res = await apiFetch("/api/security/totp", {
       method: "POST",
-      body: { enable: !sec.totp_enabled, code }
+      body: { enable: !sec.totp_enabled, code: document.getElementById("totpVerifyInput").value }
     });
     await renderSecurityView(container);
     if (res.recovery_codes) {
       const box = document.getElementById("recoveryCodesBox");
       if (box) {
-        box.innerHTML = `<div style="background:#dcfce7; padding:10px; border-radius:6px; font-size:12.5px;">
-          <strong>✓ 2FA Attivato! Codici di recupero monouso:</strong> <code>${res.recovery_codes.join(", ")}</code>
+        box.innerHTML = `<div style="background:var(--success-soft); border:1px solid var(--success-border); padding:8px 10px; border-radius:6px; font-size:12px;">
+          Codici di recupero: <code>${res.recovery_codes.join(", ")}</code>
         </div>`;
       }
     }
@@ -2525,17 +2272,11 @@ async function renderSecurityView(container) {
     });
     const box = document.getElementById("backupVerifyResultBox");
     if (box) {
-      box.innerHTML = `
-        <div style="background:#dcfce7; border:1px solid #86efac; padding:10px 12px; border-radius:8px; font-size:13px; color:#14532d;">
-          <strong>✓ Ripristino verificato con successo in ambiente di prova isolato!</strong><br>
-          Backup ID: <code>${esc(res.backup_id)}</code> · Integrità SQLite: <strong>${esc(res.sqlite_integrity)}</strong> ·
-          Persone verificate: <strong>${res.people_count}</strong> · Valutazioni: <strong>${res.evaluations_count}</strong> ·
-          Pacchetti: <strong>${res.packages_count}</strong> · Allegati verificati (SHA-256): <strong>${res.attachments_verified}</strong>.
-        </div>
-      `;
+      box.innerHTML = `<div style="background:var(--success-soft); border:1px solid var(--success-border); padding:8px 10px; border-radius:6px; font-size:12.5px; color:var(--success);">
+        Backup verificato (${esc(res.backup_id)} · ${res.people_count} persone · integrità ${esc(res.sqlite_integrity)}).
+      </div>`;
     }
   };
-
   document.getElementById("verifyLatestBackupBtn")?.addEventListener("click", () => runRestoreCheck(null));
   container.querySelectorAll("[data-verify-backup]").forEach((btn) => {
     btn.addEventListener("click", () => runRestoreCheck(btn.getAttribute("data-verify-backup")));
@@ -2543,98 +2284,480 @@ async function renderSecurityView(container) {
 }
 
 // ============================================================================
-// MODALI OPERATIVI (PERSONA, APPUNTAMENTO, DRAWER SEDUTA, VALUTAZIONE + BODY MAP, ECC.)
+// MODALE IMPORTAZIONE CSV TALLY (PCS + TSK-13 AUTOMATICO)
+// ============================================================================
+
+function showImportTallyCsvModal(episodeId) {
+  let parsedRows = [];
+  let selectedRowIdx = 0;
+
+  openModal(`
+    <h2 class="modal-title">Importa scale da CSV Tally</h2>
+    <div class="dropzone" id="csvDropzone">
+      <div style="font-weight:600; color:var(--text); margin-bottom:4px;">Seleziona o trascina un file CSV esportato da Tally</div>
+      <div style="font-size:12.5px; color:var(--text-muted);">Riconoscimento automatico PCS-I (13 item) e TSK-13 (13 item) con sottoscale</div>
+      <input type="file" id="tallyCsvFileInput" accept=".csv,text/csv" style="display:none;" />
+    </div>
+    <div id="tallyCsvError" class="form-error" style="display:none;"></div>
+    <div id="tallyCsvPreview"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" id="cancelTallyCsvBtn">Annulla</button>
+      <button type="button" class="btn btn-primary" id="confirmTallyCsvBtn" disabled>Importa scale</button>
+    </div>
+  `);
+
+  const dropzone = document.getElementById("csvDropzone");
+  const fileInput = document.getElementById("tallyCsvFileInput");
+  const errBox = document.getElementById("tallyCsvError");
+  const previewBox = document.getElementById("tallyCsvPreview");
+  const confirmBtn = document.getElementById("confirmTallyCsvBtn");
+
+  const renderPreview = () => {
+    const row = parsedRows[selectedRowIdx];
+    if (!row || !row.scales.length) {
+      previewBox.innerHTML = "";
+      confirmBtn.disabled = true;
+      return;
+    }
+
+    const rowSelector =
+      parsedRows.length > 1
+        ? `
+          <div class="form-group">
+            <label class="form-label">Compilazione da importare (${parsedRows.length} righe nel CSV)</label>
+            <select class="form-control" id="tallyRowSelect">
+              ${parsedRows
+                .map(
+                  (r, i) =>
+                    `<option value="${i}" ${i === selectedRowIdx ? "selected" : ""}>Riga #${i + 1} · ${formatDateIt(r.recordedDate)}${r.respondentName ? ` — ${esc(r.respondentName)}` : ""}${r.submissionId ? ` (${esc(r.submissionId)})` : ""}</option>`
+                )
+                .join("")}
+            </select>
+          </div>`
+        : "";
+
+    previewBox.innerHTML = `
+      ${rowSelector}
+      <div class="form-group">
+        <label class="form-label">Data compilazione</label>
+        <input class="form-control" type="date" id="tallyDateInput" value="${esc(row.recordedDate)}" />
+      </div>
+      ${row.scales
+        .map((sc, sIdx) => {
+          const bd = computeScaleBreakdown(sc.scale_code, sc.responses, sc.score_value);
+          return `
+            <label style="display:block; border:1px solid var(--border); border-radius:var(--radius-md); padding:12px; margin-bottom:8px; cursor:pointer; background:var(--bg-hover);">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <input type="checkbox" class="tally-scale-check" data-scale-idx="${sIdx}" checked />
+                  <strong>${esc(sc.scale_name)}</strong>
+                </div>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  ${bd.badge ? `<span class="tag ${bd.badge.cls}">${esc(bd.badge.text)}</span>` : ""}
+                  <strong class="num" style="font-size:16px;">${sc.score_value}${esc(sc.score_unit)}</strong>
+                </div>
+              </div>
+              <div class="subscale-row">
+                ${bd.chips.map((ch) => `<span class="subscale-chip">${esc(ch.label)}: <strong>${esc(ch.value)}</strong></span>`).join("")}
+                <span class="subscale-chip">${sc.completed_items}/${sc.total_items} item</span>
+              </div>
+            </label>
+          `;
+        })
+        .join("")}
+    `;
+
+    confirmBtn.disabled = false;
+    document.getElementById("tallyRowSelect")?.addEventListener("change", (e) => {
+      selectedRowIdx = Number(e.target.value);
+      renderPreview();
+    });
+  };
+
+  const handleFile = (file) => {
+    if (!file) return;
+    errBox.style.display = "none";
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        parsedRows = parseTallyScalesCsv(String(reader.result || ""), file.name);
+        selectedRowIdx = 0;
+        dropzone.innerHTML = `<div style="font-weight:600; color:var(--accent);">${esc(file.name)}</div><div style="font-size:12px; color:var(--text-muted); margin-top:2px;">Clicca per cambiare file</div>`;
+        renderPreview();
+      } catch (err) {
+        parsedRows = [];
+        previewBox.innerHTML = "";
+        confirmBtn.disabled = true;
+        errBox.textContent = err.message;
+        errBox.style.display = "block";
+      }
+    };
+    reader.readAsText(file, "utf-8");
+  };
+
+  dropzone?.addEventListener("click", () => fileInput?.click());
+  fileInput?.addEventListener("change", (e) => handleFile(e.target.files?.[0]));
+  dropzone?.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    dropzone.classList.add("dragover");
+  });
+  dropzone?.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+  dropzone?.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dropzone.classList.remove("dragover");
+    handleFile(e.dataTransfer?.files?.[0]);
+  });
+
+  document.getElementById("cancelTallyCsvBtn")?.addEventListener("click", closeModal);
+  confirmBtn?.addEventListener("click", async () => {
+    const row = parsedRows[selectedRowIdx];
+    if (!row) return;
+    const recDate = document.getElementById("tallyDateInput")?.value || row.recordedDate;
+    const checks = Array.from(document.querySelectorAll(".tally-scale-check"))
+      .filter((c) => c.checked)
+      .map((c) => Number(c.getAttribute("data-scale-idx")));
+
+    if (!checks.length) return;
+    confirmBtn.disabled = true;
+    try {
+      for (const idx of checks) {
+        const sc = row.scales[idx];
+        await apiFetch("/api/physio/outcome-measures", {
+          method: "POST",
+          body: {
+            episode_id: episodeId,
+            scale_code: sc.scale_code,
+            scale_name: sc.scale_name,
+            scale_version: sc.scale_version,
+            source_mode: sc.source_mode,
+            score_unit: sc.score_unit,
+            score_value: sc.score_value,
+            responses: sc.responses,
+            recorded_date: recDate,
+            context_label: sc.context_label,
+            clinical_note: sc.clinical_note
+          }
+        });
+      }
+      closeModal();
+      await refreshCurrentView();
+    } catch (err) {
+      confirmBtn.disabled = false;
+      errBox.textContent = err.message;
+      errBox.style.display = "block";
+    }
+  });
+}
+
+// ============================================================================
+// MODALE REGISTRAZIONE SCALA (CON SUPPORTO PCS & TSK-13 INTERATTIVO)
+// ============================================================================
+
+function showRecordOutcomeModal(episodeId, evaluationId = null) {
+  const todayStr = todayRomeStr();
+  let multiItemMode = "quick"; // 'quick' | 'items'
+
+  openModal(
+    `
+    <h2 class="modal-title">Registra scala</h2>
+    <form id="recordOutcomeForm">
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">Scala *</label>
+          <select class="form-control" name="scale_code" id="outcomeScaleSelect">
+            <option value="PCS">PCS-I — Pain Catastrophizing Scale (0–52)</option>
+            <option value="TSK-13">TSK-13 — Tampa Scale of Kinesiophobia (13–52)</option>
+            <option value="NPRS">NPRS — Dolore (0–10)</option>
+            <option value="PSFS">PSFS — Funzione specifica (0–10)</option>
+            <option value="SANE">SANE — Funzione globale (0–100%)</option>
+            <option value="QuickDASH">QuickDASH (/100)</option>
+            <option value="ODI">ODI — Oswestry Disability Index (%)</option>
+            <option value="NDI">NDI — Neck Disability Index (%)</option>
+            <option value="LEFS">LEFS — Lower Extremity Functional Scale (/80)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Data *</label>
+          <input class="form-control" type="date" name="recorded_date" value="${todayStr}" required />
+        </div>
+      </div>
+
+      <div id="multiItemToggleRow" style="margin-bottom:12px;">
+        <div class="segmented">
+          <button type="button" class="seg-btn active" data-entry-mode="quick">Punteggio totale</button>
+          <button type="button" class="seg-btn" data-entry-mode="items">Compila i 13 item</button>
+        </div>
+      </div>
+
+      <div class="form-group" id="singleScoreBox">
+        <label class="form-label" id="singleScoreLabel">Punteggio (0–52) *</label>
+        <input class="form-control" type="number" step="0.1" name="score_value" id="singleScoreInput" placeholder="Es. 28" />
+      </div>
+
+      <div id="itemsFormBox" style="display:none;"></div>
+
+      <div id="psfsItemsBox" style="display:none; margin-bottom:12px;">
+        <div class="form-label">Attività specifiche (0–10)</div>
+        <div class="grid-2" style="margin-bottom:6px;">
+          <input class="form-control" name="psfs_act_1" placeholder="Attività 1" />
+          <input class="form-control" type="number" min="0" max="10" step="0.5" name="psfs_score_1" placeholder="Punteggio 0–10" />
+        </div>
+        <div class="grid-2" style="margin-bottom:6px;">
+          <input class="form-control" name="psfs_act_2" placeholder="Attività 2" />
+          <input class="form-control" type="number" min="0" max="10" step="0.5" name="psfs_score_2" placeholder="Punteggio 0–10" />
+        </div>
+        <div class="grid-2">
+          <input class="form-control" name="psfs_act_3" placeholder="Attività 3" />
+          <input class="form-control" type="number" min="0" max="10" step="0.5" name="psfs_score_3" placeholder="Punteggio 0–10" />
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">Contesto</label>
+          <input class="form-control" name="context_label" value="Valutazione in seduta" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Note</label>
+          <input class="form-control" name="clinical_note" id="outcomeClinicalNoteInput" />
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="cancelOutcomeBtn">Annulla</button>
+        <button type="submit" class="btn btn-primary">Salva scala</button>
+      </div>
+    </form>
+  `,
+    { wide: true }
+  );
+
+  const scaleSel = document.getElementById("outcomeScaleSelect");
+  const toggleRow = document.getElementById("multiItemToggleRow");
+  const singleBox = document.getElementById("singleScoreBox");
+  const singleLabel = document.getElementById("singleScoreLabel");
+  const itemsBox = document.getElementById("itemsFormBox");
+  const psfsBox = document.getElementById("psfsItemsBox");
+
+  const render13Items = (code) => {
+    const defs = code === "PCS" ? PCS_ITEMS : TSK13_ITEMS;
+    const values = code === "PCS" ? [0, 1, 2, 3, 4] : [1, 2, 3, 4];
+    const legend =
+      code === "PCS"
+        ? "0 = Mai · 1 = Poco · 2 = Moderatamente · 3 = Molto · 4 = Sempre"
+        : "1 = Per nulla d'accordo · 2 = Poco · 3 = Abbastanza · 4 = Molto d'accordo";
+
+    itemsBox.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; flex-wrap:wrap; gap:6px;">
+        <span style="font-size:12px; color:var(--text-muted);">${legend}</span>
+        <span id="liveScaleTotal" class="tag tag-accent num">Totale: —/52</span>
+      </div>
+      <div class="scale-items-scroll">
+        ${defs
+          .map(
+            (it) => `
+            <div class="scale-item-row">
+              <span><strong class="num" style="color:var(--text-muted); margin-right:6px;">${it.item}.</strong>${esc(it.text)}</span>
+              <div class="scale-rating-group">
+                ${values
+                  .map(
+                    (v) => `
+                    <label class="scale-rating-pill">
+                      <input type="radio" name="scale_item_${it.item}" value="${v}" />
+                      <span>${v}</span>
+                    </label>`
+                  )
+                  .join("")}
+              </div>
+            </div>`
+          )
+          .join("")}
+      </div>
+    `;
+
+    itemsBox.querySelectorAll('input[type="radio"]').forEach((r) => {
+      r.addEventListener("change", () => {
+        const checked = defs
+          .map((it) => {
+            const el = itemsBox.querySelector(`input[name="scale_item_${it.item}"]:checked`);
+            return el ? { ...it, score: Number(el.value) } : null;
+          })
+          .filter(Boolean);
+        const sum = checked.reduce((a, x) => a + x.score, 0);
+        const liveEl = document.getElementById("liveScaleTotal");
+        if (liveEl) liveEl.textContent = `Totale: ${sum}/52 (${checked.length}/13)`;
+      });
+    });
+  };
+
+  const syncScaleUi = () => {
+    const code = scaleSel.value;
+    const is13 = code === "PCS" || code === "TSK-13";
+    const isPsfs = code === "PSFS";
+
+    toggleRow.style.display = is13 ? "block" : "none";
+    psfsBox.style.display = isPsfs ? "block" : "none";
+
+    if (is13 && multiItemMode === "items") {
+      singleBox.style.display = "none";
+      itemsBox.style.display = "block";
+      render13Items(code);
+    } else if (isPsfs) {
+      singleBox.style.display = "none";
+      itemsBox.style.display = "none";
+    } else {
+      singleBox.style.display = "block";
+      itemsBox.style.display = "none";
+      const hints = {
+        PCS: "Punteggio totale (0–52) *",
+        "TSK-13": "Punteggio totale (13–52) *",
+        NPRS: "Intensità dolore (0–10) *",
+        SANE: "Funzione percepita (0–100%) *",
+        QuickDASH: "Punteggio (0–100) *",
+        ODI: "Percentuale (%) *",
+        NDI: "Percentuale (%) *",
+        LEFS: "Punteggio (0–80) *"
+      };
+      singleLabel.textContent = hints[code] || "Punteggio *";
+    }
+  };
+
+  scaleSel?.addEventListener("change", syncScaleUi);
+  toggleRow?.querySelectorAll("[data-entry-mode]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      multiItemMode = btn.getAttribute("data-entry-mode");
+      toggleRow.querySelectorAll("[data-entry-mode]").forEach((b) => b.classList.toggle("active", b === btn));
+      syncScaleUi();
+    });
+  });
+
+  syncScaleUi();
+
+  document.getElementById("cancelOutcomeBtn")?.addEventListener("click", closeModal);
+  document.getElementById("recordOutcomeForm")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const scaleCode = fd.get("scale_code");
+    let responses = [];
+    let scoreVal = fd.get("score_value");
+    let clinicalNote = (fd.get("clinical_note") || "").trim();
+
+    if (scaleCode === "PSFS") {
+      for (let i = 1; i <= 3; i++) {
+        const act = fd.get(`psfs_act_${i}`);
+        const sc = fd.get(`psfs_score_${i}`);
+        if (act && act.trim()) {
+          responses.push({ activity: act.trim(), score: sc !== "" && sc !== null ? Number(sc) : null });
+        }
+      }
+    } else if ((scaleCode === "PCS" || scaleCode === "TSK-13") && multiItemMode === "items") {
+      const defs = scaleCode === "PCS" ? PCS_ITEMS : TSK13_ITEMS;
+      responses = defs.map((it) => {
+        const raw = fd.get(`scale_item_${it.item}`);
+        return {
+          item: it.item,
+          subscale: it.subscale,
+          text: it.text,
+          score: raw !== null && raw !== "" ? Number(raw) : null
+        };
+      });
+      const valid = responses.filter((r) => r.score !== null);
+      if (!valid.length) {
+        alert("Seleziona almeno una risposta.");
+        return;
+      }
+      scoreVal = valid.reduce((a, r) => a + r.score, 0);
+      if (!clinicalNote) {
+        clinicalNote = buildClinicalNoteFromBreakdown(scaleCode, responses, scoreVal);
+      }
+    }
+
+    try {
+      await apiFetch("/api/physio/outcome-measures", {
+        method: "POST",
+        body: {
+          episode_id: episodeId,
+          evaluation_id: evaluationId,
+          scale_code: scaleCode,
+          score_value: scoreVal,
+          responses,
+          recorded_date: fd.get("recorded_date"),
+          context_label: fd.get("context_label"),
+          clinical_note: clinicalNote
+        }
+      });
+      closeModal();
+      await refreshCurrentView();
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+}
+
+// ============================================================================
+// ALTRI MODALI OPERATIVI (PULITI, ZERO TESTO SUPERFLUO)
 // ============================================================================
 
 function bindCommonActionButtons(root) {
   root.querySelectorAll("[data-open-person]").forEach((el) => {
     el.addEventListener("click", async (e) => {
       e.preventDefault();
-      const pid = Number(el.getAttribute("data-open-person"));
-      const tab = el.getAttribute("data-person-tab") || "riepilogo";
-      await navigateTo("people", { personId: pid, personTab: tab });
+      await navigateTo("people", {
+        personId: Number(el.getAttribute("data-open-person")),
+        personTab: el.getAttribute("data-person-tab") || "profilo"
+      });
     });
   });
 
   root.querySelectorAll("[data-open-appt-drawer]").forEach((el) => {
     el.addEventListener("click", async (e) => {
       e.preventDefault();
-      const apptId = Number(el.getAttribute("data-open-appt-drawer"));
-      await showAppointmentSessionDrawer(apptId);
+      await showAppointmentSessionDrawer(Number(el.getAttribute("data-open-appt-drawer")));
     });
   });
 
   root.querySelectorAll("[data-record-payment-pkg]").forEach((el) => {
     el.addEventListener("click", (e) => {
       e.preventDefault();
-      const pkgId = Number(el.getAttribute("data-record-payment-pkg"));
-      const personId = Number(el.getAttribute("data-person-id"));
-      const dueCents = Number(el.getAttribute("data-due-cents") || 0);
-      showRecordPaymentModal(personId, pkgId, dueCents);
+      showRecordPaymentModal(
+        Number(el.getAttribute("data-person-id")),
+        Number(el.getAttribute("data-record-payment-pkg")),
+        Number(el.getAttribute("data-due-cents") || 0)
+      );
     });
   });
 }
 
-// --- MODALE NUOVA PERSONA (CON RILEVAZIONE OMONIMIE / DUPLICATI) ---
 function showNewPersonModal() {
   openModal(`
-    <h2 style="margin-top:0;">➕ Registra Nuova Persona (Anagrafica Unica)</h2>
-    <p style="font-size:13px; color:#64748b;">Solo Nome e Cognome sono obbligatori. Puoi attivare Fisio, Fitness o entrambi.</p>
+    <h2 class="modal-title">Nuova persona</h2>
     <form id="createPersonModalForm">
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Nome *</label>
-          <input class="form-control" name="first_name" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Cognome *</label>
-          <input class="form-control" name="last_name" required />
-        </div>
+        <div class="form-group"><label class="form-label">Nome *</label><input class="form-control" name="first_name" required /></div>
+        <div class="form-group"><label class="form-label">Cognome *</label><input class="form-control" name="last_name" required /></div>
       </div>
       <div class="grid-3">
-        <div class="form-group">
-          <label class="form-label">Data di Nascita</label>
-          <input class="form-control" type="date" name="birth_date" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Telefono</label>
-          <input class="form-control" name="phone" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Email</label>
-          <input class="form-control" type="email" name="email" />
-        </div>
+        <div class="form-group"><label class="form-label">Data di nascita</label><input class="form-control" type="date" name="birth_date" /></div>
+        <div class="form-group"><label class="form-label">Telefono</label><input class="form-control" name="phone" /></div>
+        <div class="form-group"><label class="form-label">Email</label><input class="form-control" type="email" name="email" /></div>
       </div>
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Professione</label>
-          <input class="form-control" name="profession" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Sport / Attività</label>
-          <input class="form-control" name="sport_activity" />
-        </div>
+        <div class="form-group"><label class="form-label">Sport / Attività</label><input class="form-control" name="sport_activity" /></div>
+        <div class="form-group"><label class="form-label">Obiettivo</label><input class="form-control" name="goals" /></div>
       </div>
       <div class="form-group">
-        <label class="form-label">Percorsi da attivare su questa anagrafica</label>
+        <label class="form-label">Percorso</label>
         <div style="display:flex; gap:18px; padding-top:4px;">
-          <label style="display:flex; align-items:center; gap:6px; font-weight:600;">
-            <input type="checkbox" name="physio_active" checked /> 🩺 Area Fisioterapia
-          </label>
-          <label style="display:flex; align-items:center; gap:6px; font-weight:600;">
-            <input type="checkbox" name="fitness_active" /> 🏋️ Area Fitness / Personal Training
-          </label>
+          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="physio_active" checked /> Fisio</label>
+          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="fitness_active" /> PT</label>
         </div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Note Generali</label>
-        <textarea class="form-control" name="general_notes"></textarea>
-      </div>
-      <div id="dupWarningBox" style="display:none; background:#fffbeb; border:1px solid #fcd34d; padding:10px; border-radius:8px; margin-bottom:12px;"></div>
+      <div class="form-group"><label class="form-label">Note</label><textarea class="form-control" name="general_notes" rows="2"></textarea></div>
+      <div id="dupWarningBox" style="display:none; background:var(--warning-soft); border:1px solid var(--warning-border); padding:10px; border-radius:6px; margin-bottom:10px; font-size:13px;"></div>
       <input type="hidden" name="confirm_duplicate_override" id="dupOverrideInput" value="" />
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelModalBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Crea Anagrafica</button>
+        <button type="submit" class="btn btn-primary">Crea scheda</button>
       </div>
     </form>
   `);
@@ -2651,8 +2774,8 @@ function showNewPersonModal() {
           birth_date: fd.get("birth_date"),
           phone: fd.get("phone"),
           email: fd.get("email"),
-          profession: fd.get("profession"),
           sport_activity: fd.get("sport_activity"),
+          goals: fd.get("goals"),
           physio_active: fd.get("physio_active") === "on",
           fitness_active: fd.get("fitness_active") === "on",
           general_notes: fd.get("general_notes"),
@@ -2660,22 +2783,14 @@ function showNewPersonModal() {
         }
       });
       closeModal();
-      await navigateTo("people", { personId: created.id, personTab: "riepilogo" });
+      await navigateTo("people", { personId: created.id, personTab: "profilo" });
     } catch (err) {
-      if (err.details && err.details.potential_duplicates) {
+      if (err.details?.potential_duplicates) {
         const box = document.getElementById("dupWarningBox");
         box.style.display = "block";
-        const list = err.details.potential_duplicates
-          .map(
-            (d) =>
-              `<li><strong>${esc(d.first_name)} ${esc(d.last_name)}</strong> (${esc(d.birth_date || "-")}) — Motivo: ${esc((d.duplicate_reasons || []).join(", "))}</li>`
-          )
-          .join("");
-        box.innerHTML = `
-          <strong>⚠️ Possibile duplicato rilevato (nessuna unione automatica effettuata):</strong>
-          <ul style="margin:6px 0;">${list}</ul>
-          <div style="font-size:12.5px;">Clicca nuovamente su "Crea Anagrafica" se confermi che si tratta di una persona distinta.</div>
-        `;
+        box.innerHTML = `<strong>Possibile duplicato:</strong> ${err.details.potential_duplicates
+          .map((d) => `${esc(d.first_name)} ${esc(d.last_name)} (${esc((d.duplicate_reasons || []).join(", "))})`)
+          .join("; ")}. Premi di nuovo "Crea scheda" per confermare.`;
         document.getElementById("dupOverrideInput").value = "1";
       } else {
         alert(err.message);
@@ -2684,7 +2799,6 @@ function showNewPersonModal() {
   });
 }
 
-// --- DRAWER / MODALE RAPIDO GESTIONE SEDUTA E PRESENZA DALL'APPUNTAMENTO ---
 async function showAppointmentSessionDrawer(appointmentId) {
   const allAppts = await apiFetch("/api/appointments");
   const appt = (allAppts.appointments || []).find((a) => a.id === appointmentId);
@@ -2695,90 +2809,55 @@ async function showAppointmentSessionDrawer(appointmentId) {
   const idemKey = `ui_svolto_appt_${appt.id}_v${appt.version}`;
 
   openModal(`
-    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:12px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:14px;">
       <div>
-        <span class="badge ${appt.service_area === "fisio" ? "badge-physio" : "badge-fitness"}">
-          ${appt.service_area === "fisio" ? "🩺 SEDUTA FISIOTERAPIA" : "🏋️ SEDUTA PERSONAL TRAINING"}
-        </span>
-        <h2 style="margin:6px 0 2px 0;" class="sensitive-data">${esc(appt.first_name)} ${esc(appt.last_name)}</h2>
-        <div style="font-size:13.5px; color:#475569;">
-          🕒 <strong>${esc(formatRomeDateTime(appt.start_at))}</strong> (${appt.duration_minutes} min) · 📍 ${esc(appt.location)}
-        </div>
+        <span class="tag ${appt.service_area === "fisio" ? "tag-accent" : ""}">${appt.service_area === "fisio" ? "Fisio" : "PT"}</span>
+        <h2 class="modal-title" style="margin:6px 0 2px;">${esc(appt.first_name)} ${esc(appt.last_name)}</h2>
+        <div class="num" style="font-size:13px; color:var(--text-muted);">${formatRomeDateTime(appt.start_at)} (${appt.duration_minutes} min) · ${esc(appt.location)}</div>
       </div>
-      <button class="btn btn-sm btn-secondary" id="drawerOpenFullPersonBtn">📂 Apri Scheda Completa</button>
+      <button class="btn btn-sm btn-secondary" id="drawerOpenFullPersonBtn">Apri scheda</button>
     </div>
 
     ${
       pkg
-        ? `<div style="background:#f0fdfa; border:1px solid #5eead4; padding:10px 12px; border-radius:8px; margin-bottom:14px; font-size:13px;">
-            🎟️ <strong>Pacchetto collegato:</strong> ${esc(pkg.name)}<br>
-            Acquistate: <strong>${pkg.total_sessions}</strong> · Consumate: <strong>${pkg.consumed_sessions}</strong> ·
-            Residue: <strong>${pkg.remaining_sessions}</strong> · Prenotate: <strong>${pkg.reserved_sessions}</strong> ·
-            Disponibili: <strong>${pkg.available_to_book}</strong>
-            ${pkg.due_cents > 0 ? ` · <span style="color:var(--danger); font-weight:700;">Da incassare: ${formatEur(pkg.due_cents)}</span>` : " · ✓ Saldato"}
+        ? `<div style="background:var(--bg-hover); border:1px solid var(--border); padding:10px 12px; border-radius:6px; margin-bottom:14px; font-size:13px;">
+            <strong>${esc(pkg.name)}</strong> · Residue: <strong class="num">${pkg.remaining_sessions}/${pkg.total_sessions}</strong>
+            ${pkg.due_cents > 0 ? ` · <span style="color:var(--danger); font-weight:600;">Da incassare: ${formatEur(pkg.due_cents)}</span>` : " · Saldato"}
           </div>`
-        : `<div style="background:#fffbeb; border:1px solid #fcd34d; padding:10px 12px; border-radius:8px; margin-bottom:14px; font-size:13px;">
-            ⚠️ Prestazione registrata <strong>Fuori Pacchetto</strong>.
-          </div>`
+        : ""
     }
 
-    <!-- Azione Rapida Presenza / Stato Appuntamento (con protezione doppio clic / idempotenza) -->
-    <div class="card" style="background:var(--bg-subtle);">
-      <h4 style="margin:0 0 8px 0;">1. Stato Presenza e Consumo Pacchetto (Idempotente)</h4>
-      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
-        <button class="btn ${appt.status === "svolto" ? "btn-primary" : "btn-secondary"}" data-set-appt-status="svolto">
-          ✔ Segna come SVOLTA (Scala 1 seduta)
-        </button>
-        <button class="btn ${appt.status === "confermato" ? "btn-primary" : "btn-secondary"}" data-set-appt-status="confermato">
-          ✓ Confermato (Riserva)
-        </button>
-        <button class="btn ${appt.status === "prenotato" ? "btn-primary" : "btn-secondary"}" data-set-appt-status="prenotato">
-          🕒 Prenotato (Riserva)
-        </button>
-        <button class="btn ${appt.status === "annullato" ? "btn-danger" : "btn-secondary"}" data-set-appt-status="annullato" data-charge="no_charge">
-          ✖ Annullato (Non addebitato / Storna se già svolta)
-        </button>
-        <button class="btn btn-secondary" data-set-appt-status="annullato" data-charge="charge">
-          ⚠️ Disdetta Tardiva (Addebita seduta)
-        </button>
-        <button class="btn ${appt.status === "assente" ? "btn-danger" : "btn-secondary"}" data-set-appt-status="assente" data-charge="charge">
-          🚫 Assente No-Show (Addebita)
-        </button>
+    <div class="form-group">
+      <label class="form-label">Stato appuntamento</label>
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        <button class="btn btn-sm ${appt.status === "svolto" ? "btn-primary" : "btn-secondary"}" data-set-appt-status="svolto">Svolto</button>
+        <button class="btn btn-sm ${appt.status === "confermato" ? "btn-primary" : "btn-secondary"}" data-set-appt-status="confermato">Confermato</button>
+        <button class="btn btn-sm ${appt.status === "prenotato" ? "btn-primary" : "btn-secondary"}" data-set-appt-status="prenotato">Prenotato</button>
+        <button class="btn btn-sm ${appt.status === "annullato" ? "btn-danger" : "btn-secondary"}" data-set-appt-status="annullato" data-charge="no_charge">Annullato</button>
+        <button class="btn btn-sm btn-secondary" data-set-appt-status="annullato" data-charge="charge">Disdetta tardiva</button>
+        <button class="btn btn-sm ${appt.status === "assente" ? "btn-danger" : "btn-secondary"}" data-set-appt-status="assente" data-charge="charge">Assente</button>
       </div>
-
-      <!-- Spostamento Orario/Data (Non consuma una nuova seduta) -->
-      <form id="rescheduleApptForm" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; padding-top:8px; border-top:1px solid var(--border-color);">
-        <div class="form-group" style="margin:0; flex:1; min-width:200px;">
-          <label class="form-label">Sposta Data/Ora (non scala una seconda seduta)</label>
-          <input class="form-control" type="datetime-local" name="start_at" value="${esc(appt.start_at.slice(0, 16))}" required />
-        </div>
-        <div class="form-group" style="margin:0; width:110px;">
-          <label class="form-label">Durata (min)</label>
-          <input class="form-control" type="number" name="duration_minutes" value="${appt.duration_minutes}" required />
-        </div>
-        <button type="submit" class="btn btn-secondary">🕒 Sposta Orario</button>
-      </form>
     </div>
 
-    <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        ${
-          appt.service_area === "fisio" && dossier.physio.episodes.length
-            ? `<button class="btn btn-physio" id="drawerWriteSoapBtn">📝 Scrivi Nota SOAP della Seduta</button>`
-            : ""
-        }
-        ${
-          appt.service_area === "fitness"
-            ? `<button class="btn btn-fitness" id="drawerLogWorkoutBtn">🏋️ Registra Scheda Seduta Fitness</button>`
-            : ""
-        }
-        ${
-          pkg && pkg.due_cents > 0
-            ? `<button class="btn btn-secondary" id="drawerCollectPayBtn">💶 Incassa Pagamento (${formatEur(pkg.due_cents)})</button>`
-            : ""
-        }
+    <form id="rescheduleApptForm" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+      <div class="form-group" style="margin:0; flex:1; min-width:180px;">
+        <label class="form-label">Sposta data/ora</label>
+        <input class="form-control" type="datetime-local" name="start_at" value="${esc(appt.start_at.slice(0, 16))}" required />
       </div>
-      <button class="btn btn-secondary" id="closeDrawerBtn">Chiudi</button>
+      <div class="form-group" style="margin:0; width:96px;">
+        <label class="form-label">Minuti</label>
+        <input class="form-control" type="number" name="duration_minutes" value="${appt.duration_minutes}" required />
+      </div>
+      <button type="submit" class="btn btn-secondary">Sposta</button>
+    </form>
+
+    <div class="modal-footer" style="justify-content:space-between;">
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        ${appt.service_area === "fisio" && dossier.physio.episodes.length ? `<button class="btn btn-sm btn-secondary" id="drawerWriteSoapBtn">Nota SOAP</button>` : ""}
+        ${appt.service_area === "fitness" ? `<button class="btn btn-sm btn-secondary" id="drawerLogWorkoutBtn">Registra seduta</button>` : ""}
+        ${pkg && pkg.due_cents > 0 ? `<button class="btn btn-sm btn-primary" id="drawerCollectPayBtn">Incassa ${formatEur(pkg.due_cents)}</button>` : ""}
+      </div>
+      <button class="btn btn-sm btn-ghost" id="closeDrawerBtn">Chiudi</button>
     </div>
   `);
 
@@ -2787,17 +2866,15 @@ async function showAppointmentSessionDrawer(appointmentId) {
     closeModal();
     await navigateTo("people", { personId: appt.person_id, personTab: appt.service_area });
   });
-
   document.querySelectorAll("[data-set-appt-status]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       btn.disabled = true;
       const newStatus = btn.getAttribute("data-set-appt-status");
-      const chargeOverride = btn.getAttribute("data-charge") || null;
       await apiFetch(`/api/appointments/${appt.id}`, {
         method: "PUT",
         body: {
           status: newStatus,
-          charge_override: chargeOverride,
+          charge_override: btn.getAttribute("data-charge") || null,
           idempotency_key: newStatus === "svolto" ? idemKey : undefined,
           expected_version: appt.version
         }
@@ -2806,22 +2883,16 @@ async function showAppointmentSessionDrawer(appointmentId) {
       await refreshCurrentView();
     });
   });
-
   document.getElementById("rescheduleApptForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     await apiFetch(`/api/appointments/${appt.id}`, {
       method: "PUT",
-      body: {
-        start_at: fd.get("start_at"),
-        duration_minutes: Number(fd.get("duration_minutes")),
-        expected_version: appt.version
-      }
+      body: { start_at: fd.get("start_at"), duration_minutes: Number(fd.get("duration_minutes")), expected_version: appt.version }
     });
     closeModal();
     await refreshCurrentView();
   });
-
   document.getElementById("drawerWriteSoapBtn")?.addEventListener("click", () => {
     closeModal();
     showSoapNoteModal(dossier.physio.episodes[0], null, null, appt.id);
@@ -2836,11 +2907,10 @@ async function showAppointmentSessionDrawer(appointmentId) {
   });
 }
 
-// --- MODALE NUOVO APPUNTAMENTO (CON RICORRENZE E VERIFICA BUFFER / SOVRAPPOSIZIONI) ---
 async function showNewAppointmentModal(preselectedPersonId = null) {
   const pData = await apiFetch("/api/people?status=attivo");
   const people = pData.people || [];
-  const selectedPid = preselectedPersonId || (state.selectedPersonId ? state.selectedPersonId : people[0]?.id);
+  const selectedPid = preselectedPersonId || state.selectedPersonId || people[0]?.id;
 
   let packages = [];
   if (selectedPid) {
@@ -2848,113 +2918,66 @@ async function showNewAppointmentModal(preselectedPersonId = null) {
     packages = (pkgData.packages || []).filter((k) => k.status === "attivo");
   }
 
-  const defaultStart = `${state.agendaDate}T10:00`;
-
   openModal(`
-    <h2 style="margin-top:0;">📅 Nuovo Appuntamento (Agenda Unificata)</h2>
+    <h2 class="modal-title">Nuovo appuntamento</h2>
     <form id="newApptModalForm">
       <div class="grid-2">
         <div class="form-group">
           <label class="form-label">Persona *</label>
           <select class="form-control" name="person_id" id="apptPersonSelect" required>
-            ${people
-              .map(
-                (p) =>
-                  `<option value="${p.id}" ${p.id === selectedPid ? "selected" : ""}>${esc(p.last_name)} ${esc(p.first_name)}</option>`
-              )
-              .join("")}
+            ${people.map((p) => `<option value="${p.id}" ${p.id === selectedPid ? "selected" : ""}>${esc(p.last_name)} ${esc(p.first_name)}</option>`).join("")}
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Area Servizio *</label>
-          <select class="form-control" name="service_area" id="apptAreaSelect">
-            <option value="fisio">🩺 Fisioterapia</option>
-            <option value="fitness">🏋️ Personal Training / Fitness</option>
+          <label class="form-label">Area *</label>
+          <select class="form-control" name="service_area">
+            <option value="fisio">Fisioterapia</option>
+            <option value="fitness">Personal Training</option>
           </select>
         </div>
       </div>
-
       <div class="grid-2">
+        <div class="form-group"><label class="form-label">Servizio</label><input class="form-control" name="service_name" value="Seduta Fisioterapia" required /></div>
         <div class="form-group">
-          <label class="form-label">Prestazione / Servizio</label>
-          <input class="form-control" name="service_name" value="Seduta Fisioterapia" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Pacchetto Collegato (Riserva 1 seduta per occorrenza)</label>
+          <label class="form-label">Pacchetto</label>
           <select class="form-control" name="package_id" id="apptPkgSelect">
-            <option value="">-- Fuori pacchetto (Prestazione singola) --</option>
-            ${packages
-              .map(
-                (k) =>
-                  `<option value="${k.id}" selected>${esc(k.name)} (Disponibili: ${k.available_to_book} / Residue: ${k.remaining_sessions})</option>`
-              )
-              .join("")}
+            <option value="">Fuori pacchetto</option>
+            ${packages.map((k) => `<option value="${k.id}" selected>${esc(k.name)} (${k.available_to_book} disp.)</option>`).join("")}
           </select>
         </div>
       </div>
-
       <div class="grid-3">
-        <div class="form-group">
-          <label class="form-label">Data e Ora Inizio (Europe/Rome) *</label>
-          <input class="form-control" type="datetime-local" name="start_at" value="${defaultStart}" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Durata (minuti)</label>
-          <input class="form-control" type="number" name="duration_minutes" value="60" min="15" step="5" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Buffer tra sedute (min)</label>
-          <input class="form-control" type="number" name="buffer_minutes" value="10" min="0" />
-        </div>
+        <div class="form-group"><label class="form-label">Data e ora *</label><input class="form-control" type="datetime-local" name="start_at" value="${state.agendaDate}T10:00" required /></div>
+        <div class="form-group"><label class="form-label">Durata (min)</label><input class="form-control" type="number" name="duration_minutes" value="60" min="15" step="5" required /></div>
+        <div class="form-group"><label class="form-label">Ricorrenze</label><input class="form-control" type="number" name="recurrence_count" value="1" min="1" max="24" /></div>
       </div>
-
-      <div class="grid-3">
+      <div class="grid-2">
+        <div class="form-group"><label class="form-label">Luogo</label><input class="form-control" name="location" value="Studio" /></div>
         <div class="form-group">
-          <label class="form-label">Luogo</label>
-          <input class="form-control" name="location" value="Studio Principale" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Stato Iniziale</label>
+          <label class="form-label">Stato</label>
           <select class="form-control" name="status">
-            <option value="prenotato">Prenotato (Riserva seduta)</option>
-            <option value="confermato">Confermato (Riserva seduta)</option>
-            <option value="svolto">Già Svolto (Consuma subito 1 seduta)</option>
+            <option value="prenotato">Prenotato</option>
+            <option value="confermato">Confermato</option>
+            <option value="svolto">Già svolto</option>
           </select>
         </div>
-        <div class="form-group">
-          <label class="form-label">Ricorrenza Settimanale (N occorrenze)</label>
-          <input class="form-control" type="number" name="recurrence_count" value="1" min="1" max="24" />
-        </div>
       </div>
-
-      <div class="form-group">
-        <label class="form-label">Note operative appuntamento</label>
-        <input class="form-control" name="notes" placeholder="Es. Portare esami / Focus controllo carico..." />
-      </div>
-
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="form-group"><label class="form-label">Note</label><input class="form-control" name="notes" /></div>
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelApptModalBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Salva Appuntamento</button>
+        <button type="submit" class="btn btn-primary">Salva</button>
       </div>
     </form>
   `);
 
   document.getElementById("cancelApptModalBtn")?.addEventListener("click", closeModal);
   document.getElementById("apptPersonSelect")?.addEventListener("change", async (e) => {
-    const pid = Number(e.target.value);
-    const pkgData = await apiFetch(`/api/packages?person_id=${pid}`);
+    const pkgData = await apiFetch(`/api/packages?person_id=${Number(e.target.value)}`);
     const activePkgs = (pkgData.packages || []).filter((k) => k.status === "attivo");
-    const pkgSel = document.getElementById("apptPkgSelect");
-    pkgSel.innerHTML =
-      `<option value="">-- Fuori pacchetto (Prestazione singola) --</option>` +
-      activePkgs
-        .map(
-          (k) =>
-            `<option value="${k.id}" selected>${esc(k.name)} (Disponibili: ${k.available_to_book} / Residue: ${k.remaining_sessions})</option>`
-        )
-        .join("");
+    document.getElementById("apptPkgSelect").innerHTML =
+      `<option value="">Fuori pacchetto</option>` +
+      activePkgs.map((k) => `<option value="${k.id}" selected>${esc(k.name)} (${k.available_to_book} disp.)</option>`).join("");
   });
-
   document.getElementById("newApptModalForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -2970,7 +2993,7 @@ async function showNewAppointmentModal(preselectedPersonId = null) {
           out_of_package: !pkgVal,
           start_at: fd.get("start_at"),
           duration_minutes: Number(fd.get("duration_minutes")),
-          buffer_minutes: Number(fd.get("buffer_minutes")),
+          buffer_minutes: 10,
           location: fd.get("location"),
           status: fd.get("status"),
           recurrence_count: Number(fd.get("recurrence_count") || 1),
@@ -2979,12 +3002,7 @@ async function showNewAppointmentModal(preselectedPersonId = null) {
         }
       });
       closeModal();
-      if (res.conflicts && res.conflicts.length) {
-        alert(
-          "Appuntamento salvato con avviso di sovrapposizione/buffer:\n" +
-            res.conflicts.map((c) => `• ${c.message}`).join("\n")
-        );
-      }
+      if (res.conflicts?.length) alert(res.conflicts.map((c) => c.message).join("\n"));
       await refreshCurrentView();
     } catch (err) {
       alert(err.message);
@@ -2992,93 +3010,68 @@ async function showNewAppointmentModal(preselectedPersonId = null) {
   });
 }
 
-// --- MODALE NUOVO PACCHETTO ---
 async function showNewPackageModal(preselectedPersonId = null) {
   const pData = await apiFetch("/api/people?status=attivo");
   const people = pData.people || [];
   const selectedPid = preselectedPersonId || state.selectedPersonId || people[0]?.id;
-  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
 
   openModal(`
-    <h2 style="margin-top:0;">🎟️ Vendi / Attiva Nuovo Pacchetto</h2>
+    <h2 class="modal-title">Nuovo pacchetto</h2>
     <form id="newPkgModalForm">
       <div class="grid-2">
         <div class="form-group">
           <label class="form-label">Persona *</label>
           <select class="form-control" name="person_id" required>
-            ${people
-              .map(
-                (p) =>
-                  `<option value="${p.id}" ${p.id === selectedPid ? "selected" : ""}>${esc(p.last_name)} ${esc(p.first_name)}</option>`
-              )
-              .join("")}
+            ${people.map((p) => `<option value="${p.id}" ${p.id === selectedPid ? "selected" : ""}>${esc(p.last_name)} ${esc(p.first_name)}</option>`).join("")}
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Tipologia Servizio *</label>
+          <label class="form-label">Area</label>
           <select class="form-control" name="service_area">
             <option value="fisio">Fisioterapia</option>
-            <option value="fitness">Personal Training / Fitness</option>
-            <option value="misto">Integrato / Misto (Fisio + Fitness)</option>
+            <option value="fitness">Personal Training</option>
+            <option value="misto">Misto</option>
           </select>
         </div>
       </div>
       <div class="grid-3">
-        <div class="form-group">
-          <label class="form-label">Nome Pacchetto *</label>
-          <input class="form-control" name="name" value="Pacchetto 10 Sedute" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Numero di Sedute *</label>
-          <input class="form-control" type="number" name="total_sessions" value="10" min="1" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Prezzo Totale (€) *</label>
-          <input class="form-control" type="number" step="0.01" name="price_eur" value="500.00" min="0" required />
-        </div>
+        <div class="form-group"><label class="form-label">Nome *</label><input class="form-control" name="name" value="Pacchetto 10 sedute" required /></div>
+        <div class="form-group"><label class="form-label">Sedute *</label><input class="form-control" type="number" name="total_sessions" value="10" min="1" required /></div>
+        <div class="form-group"><label class="form-label">Prezzo (€) *</label><input class="form-control" type="number" step="0.01" name="price_eur" value="500.00" min="0" required /></div>
+      </div>
+      <div class="grid-3">
+        <div class="form-group"><label class="form-label">Data acquisto</label><input class="form-control" type="date" name="purchased_date" value="${todayRomeStr()}" required /></div>
+        <div class="form-group"><label class="form-label">Scadenza</label><input class="form-control" type="date" name="valid_until" /></div>
+        <div class="form-group"><label class="form-label">Acconto (€)</label><input class="form-control" type="number" step="0.01" name="initial_payment_eur" value="0.00" min="0" /></div>
       </div>
       <div class="grid-3">
         <div class="form-group">
-          <label class="form-label">Data Acquisto</label>
-          <input class="form-control" type="date" name="purchased_date" value="${todayStr}" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Data Scadenza / Validità</label>
-          <input class="form-control" type="date" name="valid_until" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Acconto / Pagamento Immediato (€)</label>
-          <input class="form-control" type="number" step="0.01" name="initial_payment_eur" value="0.00" min="0" />
-        </div>
-      </div>
-      <div class="grid-3">
-        <div class="form-group">
-          <label class="form-label">Metodo Pagamento Acconto</label>
+          <label class="form-label">Metodo</label>
           <select class="form-control" name="payment_method">
-            <option value="POS/Carta">POS / Carta (nessun dato carta salvato)</option>
-            <option value="Bonifico">Bonifico Bancario</option>
+            <option value="POS/Carta">POS / Carta</option>
+            <option value="Bonifico">Bonifico</option>
             <option value="Contanti">Contanti</option>
-            <option value="Satispay/Altro">Satispay / Altro</option>
+            <option value="Satispay/Altro">Altro</option>
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Politica Disdetta Tardiva</label>
+          <label class="form-label">Disdetta tardiva</label>
           <select class="form-control" name="late_cancel_policy">
-            <option value="charge">Addebita seduta</option>
+            <option value="charge">Addebita</option>
             <option value="no_charge">Non addebitare</option>
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Politica Assenza (No-Show)</label>
+          <label class="form-label">Assenza</label>
           <select class="form-control" name="no_show_policy">
-            <option value="charge">Addebita seduta</option>
+            <option value="charge">Addebita</option>
             <option value="no_charge">Non addebitare</option>
           </select>
         </div>
       </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:10px;">
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelPkgModalBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Attiva Pacchetto</button>
+        <button type="submit" class="btn btn-primary">Crea pacchetto</button>
       </div>
     </form>
   `);
@@ -3108,39 +3101,28 @@ async function showNewPackageModal(preselectedPersonId = null) {
 }
 
 function showRecordPaymentModal(personId, packageId, dueCents = 0) {
-  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
   openModal(`
-    <h2 style="margin-top:0;">💶 Registra Pagamento (Totale o Parziale)</h2>
-    <p style="font-size:12.5px; color:#64748b;">Non viene memorizzato alcun numero di carta di credito/debito.</p>
+    <h2 class="modal-title">Registra pagamento</h2>
     <form id="recordPayForm">
       <div class="grid-2">
+        <div class="form-group"><label class="form-label">Importo (€) *</label><input class="form-control" type="number" step="0.01" name="amount_eur" value="${(dueCents / 100).toFixed(2)}" min="0.01" required /></div>
         <div class="form-group">
-          <label class="form-label">Importo Incassato (€) *</label>
-          <input class="form-control" type="number" step="0.01" name="amount_eur" value="${(dueCents / 100).toFixed(2)}" min="0.01" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Metodo di Pagamento *</label>
+          <label class="form-label">Metodo *</label>
           <select class="form-control" name="payment_method">
             <option value="POS/Carta">POS / Carta</option>
             <option value="Bonifico">Bonifico</option>
             <option value="Contanti">Contanti</option>
-            <option value="Satispay/Altro">Satispay / Altro</option>
+            <option value="Satispay/Altro">Altro</option>
           </select>
         </div>
       </div>
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Data Pagamento</label>
-          <input class="form-control" type="date" name="payment_date" value="${todayStr}" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Note / Riferimento</label>
-          <input class="form-control" name="reference_note" placeholder="Es. Saldo / 2a rata" />
-        </div>
+        <div class="form-group"><label class="form-label">Data</label><input class="form-control" type="date" name="payment_date" value="${todayRomeStr()}" required /></div>
+        <div class="form-group"><label class="form-label">Note</label><input class="form-control" name="reference_note" /></div>
       </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelPayBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Registra Incasso</button>
+        <button type="submit" class="btn btn-primary">Salva pagamento</button>
       </div>
     </form>
   `);
@@ -3164,25 +3146,17 @@ function showRecordPaymentModal(personId, packageId, dueCents = 0) {
   });
 }
 
-// ============================================================================
-// MODALI CLINICI FISIOTERAPIA (EPISODIO, VALUTAZIONE + BODY MAP 2D, FLAGS, SCALE, SOAP)
-// ============================================================================
-
 function showNewPhysioEpisodeModal(personId) {
-  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
   openModal(`
-    <h2 style="margin-top:0;">🩺 Nuovo Episodio Fisioterapico</h2>
+    <h2 class="modal-title">Nuovo episodio fisioterapico</h2>
     <form id="newEpisodeForm">
       <div class="grid-2">
+        <div class="form-group"><label class="form-label">Titolo *</label><input class="form-control" name="title" placeholder="Es. Spalla destra / Lombalgia" required /></div>
         <div class="form-group">
-          <label class="form-label">Titolo Episodio Clinico *</label>
-          <input class="form-control" name="title" placeholder="Es. Lombalgia acuta / Sindrome subacromiale DX" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Distretto Corporeo &amp; Lato</label>
+          <label class="form-label">Distretto e lato</label>
           <div style="display:flex; gap:6px;">
-            <input class="form-control" name="body_region" placeholder="Es. Spalla / Ginocchio / Rachide" />
-            <select class="form-control" name="laterality" style="width:130px;">
+            <input class="form-control" name="body_region" placeholder="Es. Spalla" />
+            <select class="form-control" name="laterality" style="width:110px;">
               <option value="DX">DX</option>
               <option value="SX">SX</option>
               <option value="Bilaterale">Bilaterale</option>
@@ -3191,33 +3165,18 @@ function showNewPhysioEpisodeModal(personId) {
           </div>
         </div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Motivo Principale della Consultazione *</label>
-        <input class="form-control" name="chief_complaint" required />
+      <div class="form-group"><label class="form-label">Motivo principale *</label><input class="form-control" name="chief_complaint" required /></div>
+      <div class="grid-2">
+        <div class="form-group"><label class="form-label">Data inizio</label><input class="form-control" type="date" name="start_date" value="${todayRomeStr()}" required /></div>
+        <div class="form-group"><label class="form-label">Rivalutazione prevista</label><input class="form-control" type="date" name="reassessment_due_date" /></div>
       </div>
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Data Inizio</label>
-          <input class="form-control" type="date" name="start_date" value="${todayStr}" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Data Rivalutazione Prevista</label>
-          <input class="form-control" type="date" name="reassessment_due_date" />
-        </div>
+        <div class="form-group"><label class="form-label">Obiettivi paziente</label><textarea class="form-control" name="patient_goals" rows="2"></textarea></div>
+        <div class="form-group"><label class="form-label">Obiettivi clinici</label><textarea class="form-control" name="therapist_goals" rows="2"></textarea></div>
       </div>
-      <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Obiettivi del Paziente</label>
-          <textarea class="form-control" name="patient_goals"></textarea>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Obiettivi del Fisioterapista</label>
-          <textarea class="form-control" name="therapist_goals"></textarea>
-        </div>
-      </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelEpBtn">Annulla</button>
-        <button type="submit" class="btn btn-physio">Crea Episodio e Inizializza Checklist Flags</button>
+        <button type="submit" class="btn btn-primary">Crea episodio</button>
       </div>
     </form>
   `);
@@ -3246,37 +3205,19 @@ function showNewPhysioEpisodeModal(personId) {
   });
 }
 
-// --- MODALE INTERATTIVO DI VALUTAZIONE / RIVALUTAZIONE CON EDITOR BODY MAP 2D SVG ---
 function showEvaluationModal(episode, existingEval = null, defaultType = "prima_valutazione") {
-  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
   const ev = existingEval || {
     eval_type: defaultType,
-    eval_date: todayStr,
-    status: "bozza",
+    eval_date: todayRomeStr(),
     consult_reason: episode.chief_complaint || "",
     patient_goals: episode.patient_goals || "",
-    important_activities: "",
     symptom_onset: "",
-    symptom_distribution: "",
-    symptom_behavior: "",
     aggravating_factors: "",
     easing_factors: "",
-    pattern_24h: "",
-    functional_impact: "",
     medical_history: "",
-    surgeries_traumas: "",
-    medications: "",
-    imaging_reports: "",
-    sleep_quality: "",
     work_sport_load: "",
-    psychosocial_factors: "",
-    objective_measurements: [
-      { name: "ROM Attivo", value: "", unit: "°", side: episode.laterality || "DX", notes: "" }
-    ],
     special_tests: "",
-    clinical_observations: "",
     clinical_reasoning: "",
-    treatment_plan: "",
     home_advice: "",
     next_reassessment_date: episode.reassessment_due_date || "",
     body_map_markers: []
@@ -3292,193 +3233,119 @@ function showEvaluationModal(episode, existingEval = null, defaultType = "prima_
     markers: JSON.parse(JSON.stringify(ev.body_map_markers || []))
   };
 
-  openModal(`
-    <h2 style="margin-top:0;">
-      🩺 ${existingEval ? `Modifica Valutazione #${existingEval.id}` : defaultType === "rivalutazione" ? "Nuova Rivalutazione Clinica (conserva le precedenti)" : "Nuova Prima Valutazione Clinica"}
-    </h2>
+  openModal(
+    `
+    <h2 class="modal-title">${existingEval ? "Modifica valutazione" : defaultType === "rivalutazione" ? "Nuova rivalutazione" : "Nuova valutazione"}</h2>
     <form id="clinicalEvalForm">
       <div class="grid-3">
         <div class="form-group">
-          <label class="form-label">Tipo Valutazione</label>
+          <label class="form-label">Tipo</label>
           <select class="form-control" name="eval_type">
-            <option value="prima_valutazione" ${ev.eval_type === "prima_valutazione" ? "selected" : ""}>Prima Valutazione</option>
+            <option value="prima_valutazione" ${ev.eval_type === "prima_valutazione" ? "selected" : ""}>Prima valutazione</option>
             <option value="rivalutazione" ${ev.eval_type === "rivalutazione" ? "selected" : ""}>Rivalutazione</option>
           </select>
         </div>
-        <div class="form-group">
-          <label class="form-label">Data Valutazione</label>
-          <input class="form-control" type="date" name="eval_date" value="${esc(ev.eval_date)}" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Prossima Rivalutazione Prevista</label>
-          <input class="form-control" type="date" name="next_reassessment_date" value="${esc(ev.next_reassessment_date || "")}" />
-        </div>
+        <div class="form-group"><label class="form-label">Data</label><input class="form-control" type="date" name="eval_date" value="${esc(ev.eval_date)}" required /></div>
+        <div class="form-group"><label class="form-label">Prossima rivalutazione</label><input class="form-control" type="date" name="next_reassessment_date" value="${esc(ev.next_reassessment_date || "")}" /></div>
       </div>
 
-      <!-- Editor Interattivo Mappa del Corpo 2D (Mouse & Touch Mac/iPad/iPhone) -->
-      <div class="card" style="background:var(--bg-subtle); border:2px solid var(--physio-accent);">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
-          <h4 style="margin:0;">🧍 Mappa Interattiva del Corpo 2D (Tocca o clicca sulla silhouette per segnare punti o aree)</h4>
-          <div style="display:flex; gap:6px; flex-wrap:wrap;">
-            <button type="button" class="btn btn-sm btn-primary" id="bmViewAntBtn">Vista Anteriore</button>
-            <button type="button" class="btn btn-sm btn-secondary" id="bmViewPostBtn">Vista Posteriore</button>
-            <button type="button" class="btn btn-sm btn-secondary" id="bmZoom1Btn">Zoom 1x</button>
-            <button type="button" class="btn btn-sm btn-secondary" id="bmZoomUpperBtn">Zoom 1.5x Sup</button>
-            <button type="button" class="btn btn-sm btn-secondary" id="bmZoomLowerBtn">Zoom 1.5x Inf</button>
+      <details class="clean-details" style="margin-bottom:14px;">
+        <summary>
+          <span>Mappa corporea 2D (<span id="bmMarkersCount">${state.bodyMapDraft.markers.length}</span>)</span>
+          ${ico("chevronDown")}
+        </summary>
+        <div class="details-body">
+          <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;">
+            <button type="button" class="btn btn-xs btn-primary" id="bmViewAntBtn">Anteriore</button>
+            <button type="button" class="btn btn-xs btn-secondary" id="bmViewPostBtn">Posteriore</button>
+            <button type="button" class="btn btn-xs btn-secondary" id="bmZoom1Btn">1x</button>
+            <button type="button" class="btn btn-xs btn-secondary" id="bmZoomUpperBtn">Sup</button>
+            <button type="button" class="btn btn-xs btn-secondary" id="bmZoomLowerBtn">Inf</button>
           </div>
-        </div>
-
-        <div class="body-map-layout">
-          <div class="body-map-stage" id="bmInteractiveStage"></div>
-          <div>
-            <div style="background:var(--bg-surface); padding:12px; border-radius:8px; border:1px solid var(--border-color); margin-bottom:10px;">
-              <h5 style="margin:0 0 8px 0;">Impostazioni Pennello / Marcatore</h5>
+          <div class="body-map-layout">
+            <div class="body-map-stage" id="bmInteractiveStage"></div>
+            <div>
               <div class="grid-2">
                 <div class="form-group">
-                  <label class="form-label">Tipo Segno</label>
-                  <select class="form-control" id="bmKindSelect">
-                    <option value="point">Punto preciso (●)</option>
-                    <option value="area">Area diffusa (◯)</option>
+                  <label class="form-label">Tipo segno</label>
+                  <select class="form-control form-control-sm" id="bmKindSelect">
+                    <option value="point">Punto</option>
+                    <option value="area">Area</option>
                   </select>
                 </div>
-                <div class="form-group">
-                  <label class="form-label">Raggio Area (20-85)</label>
-                  <input class="form-control" type="number" id="bmRadiusInput" value="48" min="18" max="90" />
-                </div>
+                <div class="form-group"><label class="form-label">Intensità (0–10)</label><input class="form-control form-control-sm" type="number" id="bmIntensityInput" value="6" min="0" max="10" /></div>
               </div>
               <div class="grid-2">
                 <div class="form-group">
-                  <label class="form-label">Tipo di Sintomo</label>
-                  <select class="form-control" id="bmSymptomSelect">
-                    ${SYMPTOM_TYPES.map((s) => `<option value="${esc(s.id)}">${s.symbol} ${esc(s.id)}</option>`).join("")}
+                  <label class="form-label">Sintomo</label>
+                  <select class="form-control form-control-sm" id="bmSymptomSelect">
+                    ${SYMPTOM_TYPES.map((s) => `<option value="${esc(s.id)}">${esc(s.id)}</option>`).join("")}
                   </select>
                 </div>
-                <div class="form-group">
-                  <label class="form-label">Intensità (0–10)</label>
-                  <input class="form-control" type="number" id="bmIntensityInput" value="6" min="0" max="10" />
-                </div>
+                <div class="form-group"><label class="form-label">Nota</label><input class="form-control form-control-sm" id="bmNoteInput" /></div>
               </div>
-              <div class="form-group" style="margin-bottom:0;">
-                <label class="form-label">Nota sul punto/area (opzionale)</label>
-                <input class="form-control" id="bmNoteInput" placeholder="Es. Comparsa a 45° di flessione..." />
-              </div>
-            </div>
-
-            <!-- Inserimento manuale/testuale accessibile e lista marcatori -->
-            <div style="background:var(--bg-surface); padding:12px; border-radius:8px; border:1px solid var(--border-color);">
-              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                <h5 style="margin:0;">Punti/Aree Segnate (<span id="bmMarkersCount">0</span>)</h5>
-                <button type="button" class="btn btn-sm btn-secondary" id="bmAddTextualMarkerBtn">➕ Aggiungi da Tastiera</button>
-              </div>
-              <div id="bmMarkersListContainer" style="max-height:210px; overflow-y:auto;"></div>
+              <div id="bmMarkersListContainer" style="max-height:190px; overflow-y:auto; margin-top:6px;"></div>
             </div>
           </div>
         </div>
-      </div>
+      </details>
 
-      <!-- Sezioni Cliniche Strutturate -->
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Motivo della consultazione</label>
-          <textarea class="form-control" name="consult_reason">${esc(ev.consult_reason || "")}</textarea>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Obiettivi del paziente &amp; Attività importanti</label>
-          <textarea class="form-control" name="patient_goals">${esc(ev.patient_goals || "")}</textarea>
-        </div>
+        <div class="form-group"><label class="form-label">Motivo</label><textarea class="form-control" name="consult_reason" rows="2">${esc(ev.consult_reason || "")}</textarea></div>
+        <div class="form-group"><label class="form-label">Obiettivi paziente</label><textarea class="form-control" name="patient_goals" rows="2">${esc(ev.patient_goals || "")}</textarea></div>
       </div>
-
       <div class="grid-3">
-        <div class="form-group">
-          <label class="form-label">Esordio e Andamento Sintomi</label>
-          <textarea class="form-control" name="symptom_onset">${esc(ev.symptom_onset || "")}</textarea>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Fattori Aggravanti</label>
-          <textarea class="form-control" name="aggravating_factors">${esc(ev.aggravating_factors || "")}</textarea>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Fattori Allevianti &amp; 24 Ore</label>
-          <textarea class="form-control" name="easing_factors">${esc(ev.easing_factors || "")}</textarea>
-        </div>
+        <div class="form-group"><label class="form-label">Esordio e andamento</label><textarea class="form-control" name="symptom_onset" rows="2">${esc(ev.symptom_onset || "")}</textarea></div>
+        <div class="form-group"><label class="form-label">Aggravanti</label><textarea class="form-control" name="aggravating_factors" rows="2">${esc(ev.aggravating_factors || "")}</textarea></div>
+        <div class="form-group"><label class="form-label">Allevianti / 24h</label><textarea class="form-control" name="easing_factors" rows="2">${esc(ev.easing_factors || "")}</textarea></div>
       </div>
-
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Storia Clinica, Traumi, Chirurgia, Farmaci e Referti</label>
-          <textarea class="form-control" name="medical_history">${esc(ev.medical_history || "")}</textarea>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Sonno, Lavoro, Sport, Carico Abituale e Fattori Psicosociali</label>
-          <textarea class="form-control" name="work_sport_load">${esc(ev.work_sport_load || "")}</textarea>
-        </div>
+        <div class="form-group"><label class="form-label">Test speciali e osservazioni</label><textarea class="form-control" name="special_tests" rows="2">${esc(ev.special_tests || "")}</textarea></div>
+        <div class="form-group"><label class="form-label">Ragionamento clinico e piano</label><textarea class="form-control" name="clinical_reasoning" rows="2">${esc(ev.clinical_reasoning || "")}</textarea></div>
       </div>
+      <div class="form-group"><label class="form-label">Indicazioni domiciliari</label><input class="form-control" name="home_advice" value="${esc(ev.home_advice || "")}" /></div>
 
-      <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Test Clinici Speciali &amp; Osservazioni</label>
-          <textarea class="form-control" name="special_tests">${esc(ev.special_tests || "")}</textarea>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Ragionamento Clinico Documentato &amp; Piano Terapeutico</label>
-          <textarea class="form-control" name="clinical_reasoning">${esc(ev.clinical_reasoning || "")}</textarea>
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Indicazioni Domiciliari ed Esercizi</label>
-        <input class="form-control" name="home_advice" value="${esc(ev.home_advice || "")}" />
-      </div>
-
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-top:14px;">
+      <div class="modal-footer" style="justify-content:space-between;">
         <button type="button" class="btn btn-secondary" id="cancelEvalModalBtn">Annulla</button>
         <div style="display:flex; gap:8px;">
-          <button type="submit" class="btn btn-secondary" data-save-eval-status="bozza">💾 Salva come Bozza</button>
-          <button type="submit" class="btn btn-physio" data-save-eval-status="finalizzata">🔒 Salva e Finalizza Valutazione</button>
+          <button type="submit" class="btn btn-secondary" data-save-eval-status="bozza">Salva bozza</button>
+          <button type="submit" class="btn btn-primary" data-save-eval-status="finalizzata">Finalizza</button>
         </div>
       </div>
     </form>
-  `);
+  `,
+    { wide: true }
+  );
 
-  const refreshBodyMapInteractive = () => {
+  const refreshBodyMap = () => {
     const stage = document.getElementById("bmInteractiveStage");
     if (!stage) return;
-    const indexedMarkers = state.bodyMapDraft.markers.map((m, i) => ({ ...m, _globalIdx: i }));
     stage.innerHTML = renderBodySvgMarkup(
       state.bodyMapDraft.viewSide,
-      indexedMarkers,
+      state.bodyMapDraft.markers.map((m, i) => ({ ...m, _globalIdx: i })),
       [],
       state.bodyMapDraft.zoom
     );
-
     const svgEl = stage.querySelector("svg");
     svgEl?.addEventListener("click", (evt) => {
-      const targetGroup = evt.target.closest(".active-marker");
-      if (targetGroup) {
-        return;
-      }
+      if (evt.target.closest(".active-marker")) return;
       const coords = clientEventToNormalizedSvgCoords(svgEl, evt);
       const inferred = inferAnatomicalRegionAndSide(state.bodyMapDraft.viewSide, coords.x_norm, coords.y_norm);
       const kind = document.getElementById("bmKindSelect").value;
-      const rad = Number(document.getElementById("bmRadiusInput").value || 48);
-      const sym = document.getElementById("bmSymptomSelect").value;
-      const intensity = Number(document.getElementById("bmIntensityInput").value || 5);
-      const note = document.getElementById("bmNoteInput").value;
-
       state.bodyMapDraft.markers.push({
         view_side: state.bodyMapDraft.viewSide,
         marker_kind: kind,
         x_norm: coords.x_norm,
         y_norm: coords.y_norm,
-        radius_norm: kind === "area" ? rad : 22,
+        radius_norm: kind === "area" ? 48 : 22,
         anatomical_region: inferred.region,
         laterality: inferred.laterality,
-        symptom_type: sym,
-        intensity: intensity,
-        notes: note
+        symptom_type: document.getElementById("bmSymptomSelect").value,
+        intensity: Number(document.getElementById("bmIntensityInput").value || 5),
+        notes: document.getElementById("bmNoteInput").value
       });
       document.getElementById("bmNoteInput").value = "";
-      refreshBodyMapInteractive();
+      refreshBodyMap();
     });
 
     document.getElementById("bmMarkersCount").textContent = String(state.bodyMapDraft.markers.length);
@@ -3487,72 +3354,46 @@ function showEvaluationModal(episode, existingEval = null, defaultType = "prima_
       state.bodyMapDraft.markers
         .map(
           (m, idx) => `
-          <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; padding:6px 0; border-bottom:1px solid var(--border-color); font-size:12.5px;">
-            <div>
-              <strong>#${idx + 1} [${m.view_side === "anterior" ? "Ant" : "Post"} · ${esc(m.laterality)}]</strong>
-              ${esc(m.anatomical_region)} — ${esc(m.symptom_type)} (<strong>${m.intensity}/10</strong>)
-              ${m.notes ? `<div style="color:#64748b;">${esc(m.notes)}</div>` : ""}
-            </div>
-            <button type="button" class="btn btn-sm btn-danger" data-del-bm-idx="${idx}">✕</button>
-          </div>
-        `
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-bottom:1px solid var(--border); font-size:12.5px;">
+            <span><strong>${esc(m.anatomical_region)}</strong> (${esc(m.laterality)}) · ${esc(m.symptom_type)} ${m.intensity}/10</span>
+            <button type="button" class="btn btn-xs btn-danger-ghost" data-del-bm-idx="${idx}">${ico("x")}</button>
+          </div>`
         )
-        .join("") || '<div style="color:#64748b; font-size:12px;">Tocca il corpo 2D a sinistra per aggiungere un punto o un\'area.</div>';
+        .join("") || `<div style="font-size:12px; color:var(--text-muted);">Clicca sulla figura per segnare un punto.</div>`;
 
     listBox.querySelectorAll("[data-del-bm-idx]").forEach((b) => {
       b.addEventListener("click", () => {
-        const i = Number(b.getAttribute("data-del-bm-idx"));
-        state.bodyMapDraft.markers.splice(i, 1);
-        refreshBodyMapInteractive();
+        state.bodyMapDraft.markers.splice(Number(b.getAttribute("data-del-bm-idx")), 1);
+        refreshBodyMap();
       });
     });
   };
-
-  refreshBodyMapInteractive();
+  refreshBodyMap();
 
   document.getElementById("bmViewAntBtn")?.addEventListener("click", () => {
     state.bodyMapDraft.viewSide = "anterior";
-    document.getElementById("bmViewAntBtn").className = "btn btn-sm btn-primary";
-    document.getElementById("bmViewPostBtn").className = "btn btn-sm btn-secondary";
-    refreshBodyMapInteractive();
+    document.getElementById("bmViewAntBtn").className = "btn btn-xs btn-primary";
+    document.getElementById("bmViewPostBtn").className = "btn btn-xs btn-secondary";
+    refreshBodyMap();
   });
   document.getElementById("bmViewPostBtn")?.addEventListener("click", () => {
     state.bodyMapDraft.viewSide = "posterior";
-    document.getElementById("bmViewPostBtn").className = "btn btn-sm btn-primary";
-    document.getElementById("bmViewAntBtn").className = "btn btn-sm btn-secondary";
-    refreshBodyMapInteractive();
+    document.getElementById("bmViewPostBtn").className = "btn btn-xs btn-primary";
+    document.getElementById("bmViewAntBtn").className = "btn btn-xs btn-secondary";
+    refreshBodyMap();
   });
   document.getElementById("bmZoom1Btn")?.addEventListener("click", () => {
     state.bodyMapDraft.zoom = { scale: 1, focus: "full" };
-    refreshBodyMapInteractive();
+    refreshBodyMap();
   });
   document.getElementById("bmZoomUpperBtn")?.addEventListener("click", () => {
     state.bodyMapDraft.zoom = { scale: 1.5, focus: "upper" };
-    refreshBodyMapInteractive();
+    refreshBodyMap();
   });
   document.getElementById("bmZoomLowerBtn")?.addEventListener("click", () => {
     state.bodyMapDraft.zoom = { scale: 1.5, focus: "lower" };
-    refreshBodyMapInteractive();
+    refreshBodyMap();
   });
-  document.getElementById("bmAddTextualMarkerBtn")?.addEventListener("click", () => {
-    const region = prompt("Regione anatomica (es. Spalla, Ginocchio, Rachide Lombare):", "Spalla");
-    if (!region) return;
-    const lat = prompt("Lateralità anatomica (DX, SX, Centrale, Bilaterale):", "DX") || "DX";
-    state.bodyMapDraft.markers.push({
-      view_side: state.bodyMapDraft.viewSide,
-      marker_kind: document.getElementById("bmKindSelect").value,
-      x_norm: lat === "DX" ? 440 : lat === "SX" ? 560 : 500,
-      y_norm: 320,
-      radius_norm: 24,
-      anatomical_region: region,
-      laterality: ["DX", "SX", "Centrale", "Bilaterale"].includes(lat) ? lat : "Centrale",
-      symptom_type: document.getElementById("bmSymptomSelect").value,
-      intensity: Number(document.getElementById("bmIntensityInput").value || 5),
-      notes: document.getElementById("bmNoteInput").value
-    });
-    refreshBodyMapInteractive();
-  });
-
   document.getElementById("cancelEvalModalBtn")?.addEventListener("click", closeModal);
 
   let chosenStatus = "bozza";
@@ -3565,70 +3406,53 @@ function showEvaluationModal(episode, existingEval = null, defaultType = "prima_
   document.getElementById("clinicalEvalForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const body = {
-      episode_id: episode.id,
-      expected_version: existingEval ? existingEval.version : undefined,
-      eval_type: fd.get("eval_type"),
-      eval_date: fd.get("eval_date"),
-      next_reassessment_date: fd.get("next_reassessment_date") || null,
-      status: chosenStatus,
-      consult_reason: fd.get("consult_reason"),
-      patient_goals: fd.get("patient_goals"),
-      symptom_onset: fd.get("symptom_onset"),
-      aggravating_factors: fd.get("aggravating_factors"),
-      easing_factors: fd.get("easing_factors"),
-      medical_history: fd.get("medical_history"),
-      work_sport_load: fd.get("work_sport_load"),
-      special_tests: fd.get("special_tests"),
-      clinical_reasoning: fd.get("clinical_reasoning"),
-      home_advice: fd.get("home_advice"),
-      body_map_markers: state.bodyMapDraft.markers
-    };
-    const saved = await apiFetch(
-      existingEval ? `/api/physio/evaluations/${existingEval.id}` : "/api/physio/evaluations",
-      {
-        method: existingEval ? "PUT" : "POST",
-        body
+    const saved = await apiFetch(existingEval ? `/api/physio/evaluations/${existingEval.id}` : "/api/physio/evaluations", {
+      method: existingEval ? "PUT" : "POST",
+      body: {
+        episode_id: episode.id,
+        expected_version: existingEval ? existingEval.version : undefined,
+        eval_type: fd.get("eval_type"),
+        eval_date: fd.get("eval_date"),
+        next_reassessment_date: fd.get("next_reassessment_date") || null,
+        status: chosenStatus,
+        consult_reason: fd.get("consult_reason"),
+        patient_goals: fd.get("patient_goals"),
+        symptom_onset: fd.get("symptom_onset"),
+        aggravating_factors: fd.get("aggravating_factors"),
+        easing_factors: fd.get("easing_factors"),
+        special_tests: fd.get("special_tests"),
+        clinical_reasoning: fd.get("clinical_reasoning"),
+        home_advice: fd.get("home_advice"),
+        body_map_markers: state.bodyMapDraft.markers
       }
-    );
+    });
     state.selectedEvalId = saved.id;
     closeModal();
     await refreshCurrentView();
   });
 }
 
-// --- MODALE AGGIORNAMENTO RED / YELLOW FLAG ---
 function showEditFlagModal(flag) {
   openModal(`
-    <h2 style="margin-top:0;">🚩 Aggiorna Stato Flag Clinica</h2>
-    <p style="font-weight:700;">${esc(flag.item_label)}</p>
-    <p style="font-size:12px; color:#64748b;">Fonte: ${esc(flag.guideline_source)} (${esc(flag.guideline_version)})</p>
+    <h2 class="modal-title">Dettaglio flag</h2>
+    <p style="font-size:13.5px; margin-top:0;">${esc(flag.item_label)}</p>
     <form id="editFlagForm">
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">Stato Rilevato *</label>
+          <label class="form-label">Stato</label>
           <select class="form-control" name="status">
-            <option value="non_valutato" ${flag.status === "non_valutato" ? "selected" : ""}>❓ Non valutato (Da approfondire)</option>
-            <option value="assente" ${flag.status === "assente" ? "selected" : ""}>✓ Assente</option>
-            <option value="presente" ${flag.status === "presente" ? "selected" : ""}>❗ Presente</option>
+            <option value="non_valutato" ${flag.status === "non_valutato" ? "selected" : ""}>Non valutato</option>
+            <option value="assente" ${flag.status === "assente" ? "selected" : ""}>Assente</option>
+            <option value="presente" ${flag.status === "presente" ? "selected" : ""}>Presente</option>
           </select>
         </div>
-        <div class="form-group">
-          <label class="form-label">Fonte dell'informazione</label>
-          <input class="form-control" name="source_info" value="${esc(flag.source_info || "Colloquio anamnestico / Test clinico")}" />
-        </div>
+        <div class="form-group"><label class="form-label">Fonte</label><input class="form-control" name="source_info" value="${esc(flag.source_info || "")}" /></div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Note Cliniche</label>
-        <textarea class="form-control" name="notes">${esc(flag.notes || "")}</textarea>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Azione Intrapresa dal Professionista</label>
-        <input class="form-control" name="action_taken" value="${esc(flag.action_taken || "")}" placeholder="Es. Nessuna / Monitoraggio / Invio al medico curante per approfondimento" />
-      </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="form-group"><label class="form-label">Note</label><textarea class="form-control" name="notes" rows="2">${esc(flag.notes || "")}</textarea></div>
+      <div class="form-group"><label class="form-label">Azione intrapresa</label><input class="form-control" name="action_taken" value="${esc(flag.action_taken || "")}" /></div>
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelFlagBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Salva Flag</button>
+        <button type="submit" class="btn btn-primary">Salva</button>
       </div>
     </form>
   `);
@@ -3638,13 +3462,7 @@ function showEditFlagModal(flag) {
     const fd = new FormData(e.target);
     await apiFetch("/api/physio/flags", {
       method: "PUT",
-      body: {
-        id: flag.id,
-        status: fd.get("status"),
-        source_info: fd.get("source_info"),
-        notes: fd.get("notes"),
-        action_taken: fd.get("action_taken")
-      }
+      body: { id: flag.id, status: fd.get("status"), source_info: fd.get("source_info"), notes: fd.get("notes"), action_taken: fd.get("action_taken") }
     });
     closeModal();
     await refreshCurrentView();
@@ -3653,44 +3471,28 @@ function showEditFlagModal(flag) {
 
 function showCustomFlagModal(episodeId) {
   openModal(`
-    <h2 style="margin-top:0;">➕ Aggiungi Red / Yellow Flag Personalizzata</h2>
+    <h2 class="modal-title">Nuova flag</h2>
     <form id="customFlagForm">
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">Tipologia</label>
+          <label class="form-label">Tipo</label>
           <select class="form-control" name="flag_type">
-            <option value="red">🚩 Red Flag (Clinica / Biologica)</option>
-            <option value="yellow">⚠️ Yellow Flag (Psicosociale / Contesto)</option>
+            <option value="yellow">Yellow Flag</option>
+            <option value="red">Red Flag</option>
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Stato Iniziale</label>
+          <label class="form-label">Stato</label>
           <select class="form-control" name="status">
-            <option value="presente">❗ Presente</option>
-            <option value="assente">✓ Assente</option>
-            <option value="non_valutato">❓ Non valutato</option>
+            <option value="presente">Presente</option>
+            <option value="assente">Assente</option>
+            <option value="non_valutato">Non valutato</option>
           </select>
         </div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Elemento / Segno Clinico *</label>
-        <input class="form-control" name="item_label" required />
-      </div>
-      <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Fonte</label>
-          <input class="form-control" name="source_info" value="Anamnesi / Valutazione diretta" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Azione Intrapresa</label>
-          <input class="form-control" name="action_taken" />
-        </div>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Note</label>
-        <textarea class="form-control" name="notes"></textarea>
-      </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="form-group"><label class="form-label">Descrizione *</label><input class="form-control" name="item_label" required /></div>
+      <div class="form-group"><label class="form-label">Note</label><textarea class="form-control" name="notes" rows="2"></textarea></div>
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelCustFlagBtn">Annulla</button>
         <button type="submit" class="btn btn-primary">Aggiungi</button>
       </div>
@@ -3707,8 +3509,8 @@ function showCustomFlagModal(episodeId) {
         flag_type: fd.get("flag_type"),
         status: fd.get("status"),
         item_label: fd.get("item_label"),
-        source_info: fd.get("source_info"),
-        action_taken: fd.get("action_taken"),
+        source_info: "Valutazione clinica",
+        action_taken: "",
         notes: fd.get("notes")
       }
     });
@@ -3717,186 +3519,39 @@ function showCustomFlagModal(episodeId) {
   });
 }
 
-// --- MODALE REGISTRAZIONE SCALE E MISURE DI ESITO ---
-function showRecordOutcomeModal(episodeId, evaluationId = null) {
-  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
-  openModal(`
-    <h2 style="margin-top:0;">📏 Registra Scala o Misura di Esito</h2>
-    <p style="font-size:12.5px; color:#64748b;">
-      NPRS, PSFS e SANE sono calcolate internamente secondo protocollo verificato (i dati mancanti restano vuoti/null e non valgono zero).
-      Per QuickDASH, ODI, NDI e LEFS registra il punteggio ottenuto dal modulo validato indicando la versione.
-    </p>
-    <form id="recordOutcomeForm">
-      <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Strumento / Scala *</label>
-          <select class="form-control" name="scale_code" id="outcomeScaleSelect">
-            <option value="NPRS">NPRS — Intensità del Dolore (0-10)</option>
-            <option value="PSFS">PSFS — Funzione Specifica del Paziente (0-10)</option>
-            <option value="SANE">SANE — Percezione Funzione Globale (0-100%)</option>
-            <option value="QuickDASH">QuickDASH (Punteggio esterno verificato /100)</option>
-            <option value="ODI">ODI v2.1a IT — Oswestry Disability Index (%)</option>
-            <option value="NDI">NDI IT — Neck Disability Index (%)</option>
-            <option value="LEFS">LEFS IT — Lower Extremity Functional Scale (/80)</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Data Rilevazione *</label>
-          <input class="form-control" type="date" name="recorded_date" value="${todayStr}" required />
-        </div>
-      </div>
-
-      <div class="form-group" id="singleScoreBox">
-        <label class="form-label">Punteggio Rilevato *</label>
-        <input class="form-control" type="number" step="0.1" name="score_value" placeholder="Es. 5" />
-      </div>
-
-      <div id="psfsItemsBox" style="display:none; background:var(--bg-subtle); padding:12px; border-radius:8px; margin-bottom:12px;">
-        <h5 style="margin:0 0 8px 0;">Attività Specifiche PSFS (Lascia vuoto il punteggio se un item non è valutato: non verrà contato come 0)</h5>
-        <div class="grid-2">
-          <input class="form-control" name="psfs_act_1" placeholder="Attività 1 (es. Correre 10 km)" />
-          <input class="form-control" type="number" min="0" max="10" step="0.5" name="psfs_score_1" placeholder="Punteggio 0-10" />
-        </div>
-        <div class="grid-2" style="margin-top:6px;">
-          <input class="form-control" name="psfs_act_2" placeholder="Attività 2 (es. Scendere le scale)" />
-          <input class="form-control" type="number" min="0" max="10" step="0.5" name="psfs_score_2" placeholder="Punteggio 0-10 (o vuoto se mancante)" />
-        </div>
-        <div class="grid-2" style="margin-top:6px;">
-          <input class="form-control" name="psfs_act_3" placeholder="Attività 3 (opzionale)" />
-          <input class="form-control" type="number" min="0" max="10" step="0.5" name="psfs_score_3" placeholder="Punteggio 0-10 (o vuoto se mancante)" />
-        </div>
-      </div>
-
-      <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Contesto Rilevazione</label>
-          <input class="form-control" name="context_label" value="Valutazione in seduta" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Note Cliniche</label>
-          <input class="form-control" name="clinical_note" />
-        </div>
-      </div>
-
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
-        <button type="button" class="btn btn-secondary" id="cancelOutcomeBtn">Annulla</button>
-        <button type="submit" class="btn btn-physio">Salva Misura</button>
-      </div>
-    </form>
-  `);
-
-  document.getElementById("outcomeScaleSelect")?.addEventListener("change", (e) => {
-    const isPsfs = e.target.value === "PSFS";
-    document.getElementById("psfsItemsBox").style.display = isPsfs ? "block" : "none";
-    document.getElementById("singleScoreBox").style.display = isPsfs ? "none" : "block";
-  });
-  document.getElementById("cancelOutcomeBtn")?.addEventListener("click", closeModal);
-  document.getElementById("recordOutcomeForm")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const scaleCode = fd.get("scale_code");
-    let responses = [];
-    if (scaleCode === "PSFS") {
-      for (let i = 1; i <= 3; i++) {
-        const act = fd.get(`psfs_act_${i}`);
-        const sc = fd.get(`psfs_score_${i}`);
-        if (act && act.trim()) {
-          responses.push({ activity: act.trim(), score: sc !== "" && sc !== null ? Number(sc) : null });
-        }
-      }
-    }
-    try {
-      await apiFetch("/api/physio/outcome-measures", {
-        method: "POST",
-        body: {
-          episode_id: episodeId,
-          evaluation_id: evaluationId,
-          scale_code: scaleCode,
-          score_value: fd.get("score_value"),
-          responses,
-          recorded_date: fd.get("recorded_date"),
-          context_label: fd.get("context_label"),
-          clinical_note: fd.get("clinical_note")
-        }
-      });
-      closeModal();
-      await refreshCurrentView();
-    } catch (err) {
-      alert(err.message);
-    }
-  });
-}
-
-// --- MODALE NOTA DI SEDUTA SOAP (CON BOZZA, RICHIAMO NOTA PRECEDENTE E FINALIZZAZIONE) ---
 function showSoapNoteModal(episode, existingNote = null, copiedFromNote = null, appointmentId = null) {
-  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
   const base = existingNote || copiedFromNote || {};
   openModal(`
-    <h2 style="margin-top:0;">
-      📝 ${existingNote ? `Modifica Nota SOAP #${existingNote.id}` : copiedFromNote ? `Nuova Nota SOAP (Bozza richiamata dalla seduta del ${copiedFromNote.note_date})` : "Nuova Nota di Seduta (SOAP)"}
-    </h2>
-    ${
-      copiedFromNote
-        ? `<div style="background:#e0f2fe; padding:8px 12px; border-radius:6px; font-size:12.5px; margin-bottom:10px;">
-            ℹ️ Testo precompilato come bozza a partire dalla nota del <strong>${esc(copiedFromNote.note_date)}</strong> (la data della nota originaria viene conservata nel tracciamento).
-          </div>`
-        : ""
-    }
+    <h2 class="modal-title">${existingNote ? "Modifica nota di seduta" : "Nuova nota di seduta"}</h2>
     <form id="soapNoteForm">
       <div class="grid-3">
-        <div class="form-group">
-          <label class="form-label">Data Seduta *</label>
-          <input class="form-control" type="date" name="note_date" value="${esc(existingNote ? existingNote.note_date : todayStr)}" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Dolore Pre-Seduta (0-10)</label>
-          <input class="form-control" type="number" min="0" max="10" name="pain_pre" value="${esc(base.pain_pre ?? "")}" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Dolore Post-Seduta (0-10)</label>
-          <input class="form-control" type="number" min="0" max="10" name="pain_post" value="${esc(base.pain_post ?? "")}" />
-        </div>
+        <div class="form-group"><label class="form-label">Data *</label><input class="form-control" type="date" name="note_date" value="${esc(existingNote ? existingNote.note_date : todayRomeStr())}" required /></div>
+        <div class="form-group"><label class="form-label">Dolore pre (0–10)</label><input class="form-control" type="number" min="0" max="10" name="pain_pre" value="${esc(base.pain_pre ?? "")}" /></div>
+        <div class="form-group"><label class="form-label">Dolore post (0–10)</label><input class="form-control" type="number" min="0" max="10" name="pain_post" value="${esc(base.pain_post ?? "")}" /></div>
       </div>
-      <div class="form-group">
-        <label class="form-label">S — Soggettivo / Risposta alla seduta precedente</label>
-        <textarea class="form-control" name="subjective_response">${esc(base.subjective_response || "")}</textarea>
-      </div>
-      <div class="form-group">
-        <label class="form-label">O — Oggettivo / Rivalutazione rapida in seduta</label>
-        <textarea class="form-control" name="objective_findings">${esc(base.objective_findings || "")}</textarea>
-      </div>
+      <div class="form-group"><label class="form-label">S — Soggettivo</label><textarea class="form-control" name="subjective_response" rows="2">${esc(base.subjective_response || "")}</textarea></div>
+      <div class="form-group"><label class="form-label">O — Oggettivo</label><textarea class="form-control" name="objective_findings" rows="2">${esc(base.objective_findings || "")}</textarea></div>
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">A — Interventi svolti in seduta</label>
-          <textarea class="form-control" name="interventions_performed">${esc(base.interventions_performed || "")}</textarea>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Esercizi terapeutici eseguiti / assegnati</label>
-          <textarea class="form-control" name="exercises_performed">${esc(base.exercises_performed || "")}</textarea>
-        </div>
+        <div class="form-group"><label class="form-label">A — Interventi</label><textarea class="form-control" name="interventions_performed" rows="2">${esc(base.interventions_performed || "")}</textarea></div>
+        <div class="form-group"><label class="form-label">Esercizi</label><textarea class="form-control" name="exercises_performed" rows="2">${esc(base.exercises_performed || "")}</textarea></div>
       </div>
-      <div class="form-group">
-        <label class="form-label">P — Piano e prossimi passi</label>
-        <textarea class="form-control" name="plan_next_steps">${esc(base.plan_next_steps || "")}</textarea>
-      </div>
-      <div style="display:flex; justify-content:space-between; margin-top:12px;">
+      <div class="form-group"><label class="form-label">P — Piano</label><textarea class="form-control" name="plan_next_steps" rows="2">${esc(base.plan_next_steps || "")}</textarea></div>
+      <div class="modal-footer" style="justify-content:space-between;">
         <button type="button" class="btn btn-secondary" id="cancelSoapBtn">Annulla</button>
         <div style="display:flex; gap:8px;">
-          <button type="submit" class="btn btn-secondary" data-soap-status="bozza">💾 Salva come Bozza</button>
-          <button type="submit" class="btn btn-primary" data-soap-status="finalizzata">🔒 Salva e Finalizza Nota</button>
+          <button type="submit" class="btn btn-secondary" data-soap-status="bozza">Salva bozza</button>
+          <button type="submit" class="btn btn-primary" data-soap-status="finalizzata">Finalizza</button>
         </div>
       </div>
     </form>
   `);
-
   document.getElementById("cancelSoapBtn")?.addEventListener("click", closeModal);
-  let targetStatus = "bozza";
+  let targetStatus = "finalizzata";
   document.querySelectorAll("[data-soap-status]").forEach((b) => {
     b.addEventListener("click", () => {
       targetStatus = b.getAttribute("data-soap-status");
     });
   });
-
   document.getElementById("soapNoteForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -3926,22 +3581,13 @@ function showSoapNoteModal(episode, existingNote = null, copiedFromNote = null, 
 
 function showAddendumModal({ note_id = null, evaluation_id = null, title = "" }) {
   openModal(`
-    <h2 style="margin-top:0;">📌 Aggiungi Integrazione / Rettifica Datata</h2>
-    <p style="font-size:13px; color:#475569;">
-      Il documento finalizzato (<strong>${esc(title)}</strong>) resta immutabile. Questa rettifica verrà allegata con data, ora e autore.
-    </p>
+    <h2 class="modal-title">Integrazione — ${esc(title)}</h2>
     <form id="addendumForm">
-      <div class="form-group">
-        <label class="form-label">Motivo della rettifica / integrazione *</label>
-        <input class="form-control" name="reason" value="Precisazione clinica successiva" required />
-      </div>
-      <div class="form-group">
-        <label class="form-label">Testo dell'integrazione *</label>
-        <textarea class="form-control" name="addendum_text" required></textarea>
-      </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="form-group"><label class="form-label">Motivo *</label><input class="form-control" name="reason" value="Integrazione clinica" required /></div>
+      <div class="form-group"><label class="form-label">Testo *</label><textarea class="form-control" name="addendum_text" required></textarea></div>
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelAddendumBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Registra Rettifica Datata</button>
+        <button type="submit" class="btn btn-primary">Salva</button>
       </div>
     </form>
   `);
@@ -3951,12 +3597,7 @@ function showAddendumModal({ note_id = null, evaluation_id = null, title = "" })
     const fd = new FormData(e.target);
     await apiFetch("/api/physio/addenda", {
       method: "POST",
-      body: {
-        note_id,
-        evaluation_id,
-        reason: fd.get("reason"),
-        addendum_text: fd.get("addendum_text")
-      }
+      body: { note_id, evaluation_id, reason: fd.get("reason"), addendum_text: fd.get("addendum_text") }
     });
     closeModal();
     await refreshCurrentView();
@@ -3965,29 +3606,23 @@ function showAddendumModal({ note_id = null, evaluation_id = null, title = "" })
 
 function showCloseEpisodeModal(episode) {
   openModal(`
-    <h2 style="margin-top:0;">🏁 Stato e Chiusura Episodio Fisioterapico</h2>
+    <h2 class="modal-title">Stato episodio</h2>
     <form id="closeEpForm">
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">Stato Episodio</label>
+          <label class="form-label">Stato</label>
           <select class="form-control" name="status">
             <option value="attivo" ${episode.status === "attivo" ? "selected" : ""}>Attivo</option>
-            <option value="in_pausa" ${episode.status === "in_pausa" ? "selected" : ""}>In Pausa</option>
+            <option value="in_pausa" ${episode.status === "in_pausa" ? "selected" : ""}>In pausa</option>
             <option value="concluso" ${episode.status === "concluso" ? "selected" : ""}>Concluso</option>
           </select>
         </div>
-        <div class="form-group">
-          <label class="form-label">Esito alla Chiusura</label>
-          <input class="form-control" name="closure_outcome" value="${esc(episode.closure_outcome || "Obiettivi funzionali raggiunti")}" />
-        </div>
+        <div class="form-group"><label class="form-label">Esito</label><input class="form-control" name="closure_outcome" value="${esc(episode.closure_outcome || "")}" /></div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Sintesi Finale del Percorso</label>
-        <textarea class="form-control" name="closure_summary">${esc(episode.closure_summary || "")}</textarea>
-      </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="form-group"><label class="form-label">Sintesi</label><textarea class="form-control" name="closure_summary" rows="3">${esc(episode.closure_summary || "")}</textarea></div>
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelCloseEpBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Salva Stato Episodio</button>
+        <button type="submit" class="btn btn-primary">Salva</button>
       </div>
     </form>
   `);
@@ -3997,62 +3632,40 @@ function showCloseEpisodeModal(episode) {
     const fd = new FormData(e.target);
     await apiFetch(`/api/physio/episodes/${episode.id}`, {
       method: "PUT",
-      body: {
-        expected_version: episode.version,
-        status: fd.get("status"),
-        closure_outcome: fd.get("closure_outcome"),
-        closure_summary: fd.get("closure_summary")
-      }
+      body: { expected_version: episode.version, status: fd.get("status"), closure_outcome: fd.get("closure_outcome"), closure_summary: fd.get("closure_summary") }
     });
     closeModal();
     await refreshCurrentView();
   });
 }
 
-// --- MODALE PONTE LIMITAZIONE CONDIVISA FISIO -> FITNESS ---
 function showAddSharedLimitationModal(personId, episodes = [], defaultEpId = null) {
-  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
   openModal(`
-    <h2 style="margin-top:0;">🔗 Condividi Limitazione Funzionale Rilevante con l'Area Fitness</h2>
-    <p style="font-size:12.5px; color:#64748b;">
-      Registra solo l'indicazione operativa utile per l'allenamento mantenendo fonte e data, senza esporre l'intera cartella clinica.
-    </p>
+    <h2 class="modal-title">Nuova limitazione condivisa</h2>
     <form id="sharedLimForm">
       <div class="grid-2">
+        <div class="form-group"><label class="form-label">Titolo *</label><input class="form-control" name="title" placeholder="Es. Evitare overhead pesante spalla DX" required /></div>
         <div class="form-group">
-          <label class="form-label">Titolo Sintetico Limitazione *</label>
-          <input class="form-control" name="title" placeholder="Es. Evitare overhead pesante > 90° spalla DX" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Distretto &amp; Lato</label>
+          <label class="form-label">Distretto e lato</label>
           <div style="display:flex; gap:6px;">
-            <input class="form-control" name="body_region" placeholder="Es. Ginocchio / Spalla" />
-            <select class="form-control" name="laterality" style="width:120px;">
+            <input class="form-control" name="body_region" placeholder="Spalla" />
+            <select class="form-control" name="laterality" style="width:100px;">
               <option value="DX">DX</option>
               <option value="SX">SX</option>
-              <option value="Bilaterale">Bilaterale</option>
+              <option value="Bilaterale">Bilat.</option>
               <option value="Centrale">Centrale</option>
             </select>
           </div>
         </div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Indicazione Operativa per il Personal Training *</label>
-        <textarea class="form-control" name="description" required placeholder="Cosa evitare, quale range/carico utilizzare e soglia di tolleranza..."></textarea>
-      </div>
+      <div class="form-group"><label class="form-label">Indicazione operativa *</label><textarea class="form-control" name="description" rows="2" required></textarea></div>
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Fonte della Limitazione *</label>
-          <input class="form-control" name="source_type" value="Valutazione Fisioterapica" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Data Rilevazione *</label>
-          <input class="form-control" type="date" name="recorded_date" value="${todayStr}" required />
-        </div>
+        <div class="form-group"><label class="form-label">Fonte</label><input class="form-control" name="source_type" value="Valutazione Fisio" required /></div>
+        <div class="form-group"><label class="form-label">Data</label><input class="form-control" type="date" name="recorded_date" value="${todayRomeStr()}" required /></div>
       </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelLimBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Pubblica Limitazione Condivisa</button>
+        <button type="submit" class="btn btn-primary">Salva</button>
       </div>
     </form>
   `);
@@ -4078,45 +3691,29 @@ function showAddSharedLimitationModal(personId, episodes = [], defaultEpId = nul
   });
 }
 
-// ============================================================================
-// MODALI AREA FITNESS (PROFILO, METRICHE, PROGRAMMA VERSIONATO E WORKOUT LOG)
-// ============================================================================
-
 function showEditFitnessProfileModal(personId, prof = {}) {
   openModal(`
-    <h2 style="margin-top:0;">🎯 Modifica Profilo Fitness</h2>
+    <h2 class="modal-title">Modifica profilo PT</h2>
     <form id="fitProfForm">
       <div class="grid-2">
+        <div class="form-group"><label class="form-label">Obiettivi</label><input class="form-control" name="primary_goals" value="${esc(prof.primary_goals || "")}" /></div>
         <div class="form-group">
-          <label class="form-label">Obiettivi Primari</label>
-          <input class="form-control" name="primary_goals" value="${esc(prof.primary_goals || "")}" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Livello di Esperienza</label>
+          <label class="form-label">Livello</label>
           <select class="form-control" name="experience_level">
             <option value="Principiante" ${prof.experience_level === "Principiante" ? "selected" : ""}>Principiante</option>
             <option value="Intermedio" ${prof.experience_level === "Intermedio" ? "selected" : ""}>Intermedio</option>
-            <option value="Avanzato / Agonista" ${prof.experience_level === "Avanzato / Agonista" ? "selected" : ""}>Avanzato / Agonista</option>
+            <option value="Avanzato / Agonista" ${prof.experience_level === "Avanzato / Agonista" ? "selected" : ""}>Avanzato</option>
           </select>
         </div>
       </div>
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Disponibilità Settimanale</label>
-          <input class="form-control" name="weekly_availability" value="${esc(prof.weekly_availability || "")}" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Attrezzatura Disponibile</label>
-          <input class="form-control" name="available_equipment" value="${esc(prof.available_equipment || "")}" />
-        </div>
+        <div class="form-group"><label class="form-label">Disponibilità</label><input class="form-control" name="weekly_availability" value="${esc(prof.weekly_availability || "")}" /></div>
+        <div class="form-group"><label class="form-label">Attrezzatura</label><input class="form-control" name="available_equipment" value="${esc(prof.available_equipment || "")}" /></div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Preferenze e Note Valutazione Iniziale</label>
-        <textarea class="form-control" name="initial_assessment_notes">${esc(prof.initial_assessment_notes || "")}</textarea>
-      </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="form-group"><label class="form-label">Note</label><textarea class="form-control" name="initial_assessment_notes" rows="2">${esc(prof.initial_assessment_notes || "")}</textarea></div>
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelFitProfBtn">Annulla</button>
-        <button type="submit" class="btn btn-fitness">Salva Profilo</button>
+        <button type="submit" class="btn btn-primary">Salva</button>
       </div>
     </form>
   `);
@@ -4141,45 +3738,29 @@ function showEditFitnessProfileModal(personId, prof = {}) {
 }
 
 function showAddFitnessMetricModal(personId) {
-  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
   openModal(`
-    <h2 style="margin-top:0;">📈 Registra Test o Misurazione Fitness</h2>
+    <h2 class="modal-title">Nuovo test / misura</h2>
     <form id="fitMetricForm">
       <div class="grid-2">
         <div class="form-group">
           <label class="form-label">Categoria</label>
           <select class="form-control" name="metric_category">
-            <option value="Forza">Forza (RM / Isometrica)</option>
-            <option value="Antropometria">Antropometria / Peso</option>
-            <option value="Cardio / Performance">Cardio / Salto / Performance</option>
+            <option value="Forza">Forza</option>
+            <option value="Antropometria">Antropometria</option>
+            <option value="Performance">Performance</option>
           </select>
         </div>
-        <div class="form-group">
-          <label class="form-label">Data</label>
-          <input class="form-control" type="date" name="recorded_date" value="${todayStr}" required />
-        </div>
+        <div class="form-group"><label class="form-label">Data</label><input class="form-control" type="date" name="recorded_date" value="${todayRomeStr()}" required /></div>
       </div>
       <div class="grid-3">
-        <div class="form-group">
-          <label class="form-label">Nome Test / Parametro *</label>
-          <input class="form-control" name="metric_name" placeholder="Es. Squat 5RM / Peso Corporeo" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Valore Numerico *</label>
-          <input class="form-control" type="number" step="0.1" name="value_num" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Unità *</label>
-          <input class="form-control" name="unit" value="kg" required />
-        </div>
+        <div class="form-group"><label class="form-label">Test *</label><input class="form-control" name="metric_name" placeholder="Es. Squat 5RM" required /></div>
+        <div class="form-group"><label class="form-label">Valore *</label><input class="form-control" type="number" step="0.1" name="value_num" required /></div>
+        <div class="form-group"><label class="form-label">Unità *</label><input class="form-control" name="unit" value="kg" required /></div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Protocollo / Note</label>
-        <input class="form-control" name="protocol_notes" />
-      </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="form-group"><label class="form-label">Note</label><input class="form-control" name="protocol_notes" /></div>
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelFitMetricBtn">Annulla</button>
-        <button type="submit" class="btn btn-fitness">Salva Misura</button>
+        <button type="submit" class="btn btn-primary">Salva</button>
       </div>
     </form>
   `);
@@ -4205,54 +3786,34 @@ function showAddFitnessMetricModal(personId) {
 }
 
 function showFitnessProgramModal(personId, existingProg = null) {
-  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
   const defaultWorkouts = existingProg?.workouts || [
     {
-      day_name: "Scheda A — Full Body / Forza",
+      day_name: "Scheda A",
       exercises: [
-        { name: "Goblet Squat / Trap Bar Deadlift", sets: 4, reps: "8", load: "60 kg", rest: "120s", rpe: "7.5", notes: "Controllo eccentrico" },
-        { name: "Push-up / Panca Manubri", sets: 3, reps: "10", load: "2x18 kg", rest: "90s", rpe: "8", notes: "" },
-        { name: "Rematore con Manubrio", sets: 3, reps: "10", load: "20 kg", rest: "90s", rpe: "8", notes: "" }
+        { name: "Squat / Trap Bar", sets: 4, reps: "8", load: "60 kg", rest: "120s", rpe: "7.5", notes: "" },
+        { name: "Spinte manubri", sets: 3, reps: "10", load: "2x16 kg", rest: "90s", rpe: "8", notes: "" }
       ]
     }
   ];
-
   openModal(`
-    <h2 style="margin-top:0;">
-      🏋️ ${existingProg ? `Modifica Programma (Crea versione v${existingProg.version + 1} conservando storico)` : "Nuovo Programma Fitness"}
-    </h2>
+    <h2 class="modal-title">${existingProg ? `Modifica programma (v${existingProg.version + 1})` : "Nuovo programma PT"}</h2>
     <form id="fitProgForm">
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Titolo Programma *</label>
-          <input class="form-control" name="title" value="${esc(existingProg?.title || "Programma Forza & Ricondizionamento")}" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Obiettivo *</label>
-          <input class="form-control" name="goal" value="${esc(existingProg?.goal || "Ipertrofia funzionale e controllo motorio")}" required />
-        </div>
+        <div class="form-group"><label class="form-label">Titolo *</label><input class="form-control" name="title" value="${esc(existingProg?.title || "Programma Forza")}" required /></div>
+        <div class="form-group"><label class="form-label">Obiettivo *</label><input class="form-control" name="goal" value="${esc(existingProg?.goal || "")}" required /></div>
       </div>
       <div class="grid-3">
-        <div class="form-group">
-          <label class="form-label">Data Inizio</label>
-          <input class="form-control" type="date" name="start_date" value="${esc(existingProg?.start_date || todayStr)}" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Frequenza / Sett</label>
-          <input class="form-control" type="number" name="frequency_per_week" value="${existingProg?.frequency_per_week || 2}" min="1" max="7" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Motivo Modifica Versione</label>
-          <input class="form-control" name="change_note" value="Progressione carichi e volume" />
-        </div>
+        <div class="form-group"><label class="form-label">Data inizio</label><input class="form-control" type="date" name="start_date" value="${esc(existingProg?.start_date || todayRomeStr())}" required /></div>
+        <div class="form-group"><label class="form-label">Sedute/sett.</label><input class="form-control" type="number" name="frequency_per_week" value="${existingProg?.frequency_per_week || 2}" min="1" max="7" /></div>
+        <div class="form-group"><label class="form-label">Nota versione</label><input class="form-control" name="change_note" value="Aggiornamento" /></div>
       </div>
       <div class="form-group">
-        <label class="form-label">Schede ed Esercizi (JSON strutturato modificabile)</label>
+        <label class="form-label">Schede (JSON)</label>
         <textarea class="form-control" name="workouts_json" style="font-family:monospace; min-height:170px;">${esc(JSON.stringify(defaultWorkouts, null, 2))}</textarea>
       </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelFitProgBtn">Annulla</button>
-        <button type="submit" class="btn btn-fitness">Salva Programma</button>
+        <button type="submit" class="btn btn-primary">Salva</button>
       </div>
     </form>
   `);
@@ -4264,7 +3825,7 @@ function showFitnessProgramModal(personId, existingProg = null) {
     try {
       workouts = JSON.parse(fd.get("workouts_json"));
     } catch {
-      alert("Formato JSON degli esercizi non valido.");
+      alert("JSON non valido.");
       return;
     }
     await apiFetch(existingProg ? `/api/fitness/programs/${existingProg.id}` : "/api/fitness/programs", {
@@ -4285,81 +3846,54 @@ function showFitnessProgramModal(personId, existingProg = null) {
   });
 }
 
-// --- MODALE REGISTRAZIONE VELOCE SEDUTA FITNESS (PROGRAMMATO VS SVOLTO) ---
 function showWorkoutLogModal(personId, program = null, dayIdx = 0, appointmentId = null) {
-  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
   const dayObj = program?.workouts?.[dayIdx] || {
-    day_name: "Seduta Personal Training",
-    exercises: [
-      { name: "Squat / Leg Press", sets: 4, reps: "8", load: "70 kg", rpe: "7.5" },
-      { name: "Spinte Manubri", sets: 3, reps: "10", load: "2x20 kg", rpe: "8" }
-    ]
+    day_name: "Seduta PT",
+    exercises: [{ name: "Esercizio 1", sets: 3, reps: "10", load: "", rpe: "" }]
   };
   const planned = dayObj.exercises || [];
 
-  const exRowsHtml = planned
-    .map(
-      (ex, i) => `
-      <tr>
-        <td>
-          <input class="form-control" name="ex_name_${i}" value="${esc(ex.name)}" />
-          <div style="font-size:11px; color:#64748b;">Prog: ${esc(ex.sets)}×${esc(ex.reps)} @ ${esc(ex.load)} (RPE ${esc(ex.rpe || "-")})</div>
-        </td>
-        <td><input class="form-control" name="ex_sets_${i}" value="${esc(ex.sets)}" style="width:70px;" /></td>
-        <td><input class="form-control" name="ex_reps_${i}" value="${esc(ex.reps)}" style="width:90px;" /></td>
-        <td><input class="form-control" name="ex_load_${i}" value="${esc(ex.load)}" /></td>
-        <td><input class="form-control" name="ex_rpe_${i}" value="${esc(ex.rpe || "")}" style="width:80px;" /></td>
-      </tr>
+  openModal(
     `
-    )
-    .join("");
-
-  openModal(`
-    <h2 style="margin-top:0;">⚡ Registra Seduta Fitness Veloce (Programmato vs Svolto)</h2>
+    <h2 class="modal-title">Registra seduta PT</h2>
     <form id="workoutLogForm">
       <div class="grid-3">
-        <div class="form-group">
-          <label class="form-label">Giornata / Scheda</label>
-          <input class="form-control" name="workout_day_name" value="${esc(dayObj.day_name)}" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Data Seduta</label>
-          <input class="form-control" type="date" name="session_date" value="${todayStr}" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">RPE Globale Seduta (1-10)</label>
-          <input class="form-control" type="number" step="0.5" min="1" max="10" name="session_rpe" value="7.5" />
-        </div>
+        <div class="form-group"><label class="form-label">Scheda</label><input class="form-control" name="workout_day_name" value="${esc(dayObj.day_name)}" required /></div>
+        <div class="form-group"><label class="form-label">Data</label><input class="form-control" type="date" name="session_date" value="${todayRomeStr()}" required /></div>
+        <div class="form-group"><label class="form-label">RPE (1–10)</label><input class="form-control" type="number" step="0.5" min="1" max="10" name="session_rpe" value="7.5" /></div>
       </div>
-
       <div class="table-wrap" style="margin-bottom:12px;">
-        <table class="data-table">
-          <thead><tr><th>Esercizio (e riferimento programmato)</th><th>Serie Svolte</th><th>Rip. Svolte</th><th>Carico Svolto</th><th>RPE Effettivo</th></tr></thead>
-          <tbody>${exRowsHtml}</tbody>
+        <table class="data-table data-table-compact">
+          <thead><tr><th>Esercizio</th><th>Serie</th><th>Rip.</th><th>Carico</th><th>RPE</th></tr></thead>
+          <tbody>
+            ${planned
+              .map(
+                (ex, i) => `
+                <tr>
+                  <td><input class="form-control form-control-sm" name="ex_name_${i}" value="${esc(ex.name)}" /></td>
+                  <td><input class="form-control form-control-sm" name="ex_sets_${i}" value="${esc(ex.sets)}" style="width:62px;" /></td>
+                  <td><input class="form-control form-control-sm" name="ex_reps_${i}" value="${esc(ex.reps)}" style="width:76px;" /></td>
+                  <td><input class="form-control form-control-sm" name="ex_load_${i}" value="${esc(ex.load)}" /></td>
+                  <td><input class="form-control form-control-sm" name="ex_rpe_${i}" value="${esc(ex.rpe || "")}" style="width:66px;" /></td>
+                </tr>`
+              )
+              .join("")}
+          </tbody>
         </table>
       </div>
-
       <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Risposta / Feedback del Cliente</label>
-          <input class="form-control" name="client_feedback" placeholder="Es. Buona tenuta tecnica, energia alta..." />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Eventuali Sintomi Emersi (lasciare vuoto se assenti)</label>
-          <input class="form-control" name="reported_symptoms" placeholder="Es. Lieve fastidio rotuleo 2/10 su ultima serie..." />
-        </div>
+        <div class="form-group"><label class="form-label">Feedback</label><input class="form-control" name="client_feedback" /></div>
+        <div class="form-group"><label class="form-label">Sintomi (se presenti)</label><input class="form-control" name="reported_symptoms" /></div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Indicazioni per la Seduta Successiva</label>
-        <input class="form-control" name="next_session_notes" placeholder="Es. Aumentare 2.5 kg sulla Trap Bar..." />
-      </div>
-
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="form-group"><label class="form-label">Note prossima seduta</label><input class="form-control" name="next_session_notes" /></div>
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelWLogBtn">Annulla</button>
-        <button type="submit" class="btn btn-fitness">Salva Seduta Fitness</button>
+        <button type="submit" class="btn btn-primary">Salva seduta</button>
       </div>
     </form>
-  `);
+  `,
+    { wide: true }
+  );
   document.getElementById("cancelWLogBtn")?.addEventListener("click", closeModal);
   document.getElementById("workoutLogForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -4394,25 +3928,20 @@ function showWorkoutLogModal(personId, program = null, dayIdx = 0, appointmentId
   });
 }
 
-// --- MODALI CONSENSI E UPLOAD ALLEGATI PRIVATI ---
 function showAddConsentModal(personId) {
-  const todayStr = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
   openModal(`
-    <h2 style="margin-top:0;">🛡️ Registra Informativa Privacy o Consenso Sanitario</h2>
+    <h2 class="modal-title">Registra consenso</h2>
     <form id="consentForm">
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">Tipologia Documento *</label>
+          <label class="form-label">Documento</label>
           <select class="form-control" name="doc_type">
-            <option value="informativa_privacy">Presa visione Informativa Privacy (Art. 13 GDPR)</option>
-            <option value="consenso_trattamento_sanitario">Consenso al Trattamento Dati Sanitari</option>
-            <option value="consenso_comunicazioni">Consenso Comunicazioni Organizzative</option>
+            <option value="informativa_privacy">Informativa Privacy</option>
+            <option value="consenso_trattamento_sanitario">Consenso Sanitario</option>
+            <option value="consenso_comunicazioni">Consenso Comunicazioni</option>
           </select>
         </div>
-        <div class="form-group">
-          <label class="form-label">Versione Documento *</label>
-          <input class="form-control" name="doc_version" value="v2026.1" required />
-        </div>
+        <div class="form-group"><label class="form-label">Versione</label><input class="form-control" name="doc_version" value="v2026.1" required /></div>
       </div>
       <div class="grid-2">
         <div class="form-group">
@@ -4420,21 +3949,15 @@ function showAddConsentModal(personId) {
           <select class="form-control" name="status">
             <option value="acquisito">Acquisito</option>
             <option value="revocato">Revocato</option>
-            <option value="in_attesa">In attesa di firma</option>
+            <option value="in_attesa">In attesa</option>
           </select>
         </div>
-        <div class="form-group">
-          <label class="form-label">Data Firma / Acquisizione</label>
-          <input class="form-control" type="date" name="signed_date" value="${todayStr}" />
-        </div>
+        <div class="form-group"><label class="form-label">Data</label><input class="form-control" type="date" name="signed_date" value="${todayRomeStr()}" /></div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Modalità di Acquisizione</label>
-        <input class="form-control" name="acquisition_method" value="Modulo firmato in studio" />
-      </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="form-group"><label class="form-label">Modalità</label><input class="form-control" name="acquisition_method" value="Modulo firmato" /></div>
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelConsentBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Registra Documento</button>
+        <button type="submit" class="btn btn-primary">Salva</button>
       </div>
     </form>
   `);
@@ -4460,37 +3983,32 @@ function showAddConsentModal(personId) {
 
 function showUploadAttachmentModal(personId) {
   openModal(`
-    <h2 style="margin-top:0;">📎 Carica Allegato Privato (PDF o Immagine)</h2>
-    <p style="font-size:12.5px; color:#64748b;">Il file viene salvato nello storage privato e sarà accessibile solo previa autenticazione.</p>
+    <h2 class="modal-title">Carica allegato</h2>
     <form id="uploadAttForm">
       <div class="form-group">
-        <label class="form-label">Seleziona File (PDF, PNG, JPG, WEBP max 15 MB) *</label>
+        <label class="form-label">File (PDF, PNG, JPG, WEBP max 15 MB) *</label>
         <input class="form-control" type="file" id="attFileInput" accept=".pdf,image/png,image/jpeg,image/webp" required />
       </div>
       <div class="form-group">
         <label class="form-label">Categoria</label>
         <select class="form-control" name="category">
-          <option value="Referto Diagnostico">Referto Diagnostico (RMN, RX, Eco)</option>
-          <option value="Prescrizione Medica">Prescrizione / Impegnativa Medica</option>
-          <option value="Modulo Consenso Firmato">Modulo Consenso / Informativa Firmato</option>
-          <option value="Foto Posturale / Test">Foto Valutazione / Esercizio</option>
+          <option value="Referto Diagnostico">Referto diagnostico</option>
+          <option value="Prescrizione Medica">Prescrizione medica</option>
+          <option value="Modulo Consenso Firmato">Consenso firmato</option>
+          <option value="Foto Posturale / Test">Foto / Test</option>
         </select>
       </div>
-      <div class="form-group">
-        <label class="form-label">Descrizione</label>
-        <input class="form-control" name="description" placeholder="Es. RMN spalla DX del 10/11/2026" />
-      </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <div class="form-group"><label class="form-label">Descrizione</label><input class="form-control" name="description" /></div>
+      <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelAttBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Carica in Sicurezza</button>
+        <button type="submit" class="btn btn-primary">Carica</button>
       </div>
     </form>
   `);
   document.getElementById("cancelAttBtn")?.addEventListener("click", closeModal);
   document.getElementById("uploadAttForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const fileInput = document.getElementById("attFileInput");
-    const file = fileInput.files[0];
+    const file = document.getElementById("attFileInput")?.files?.[0];
     if (!file) return;
     const fd = new FormData(e.target);
     const reader = new FileReader();
@@ -4518,40 +4036,20 @@ function showUploadAttachmentModal(personId) {
 }
 
 // ============================================================================
-// INIZIALIZZAZIONE APP, RICERCA GLOBALE, PRIVACY MODE E SERVICE WORKER
+// INIT APP, RICERCA GLOBALE E PRIVACY MODE
 // ============================================================================
-
-function applyTheme(theme) {
-  const mode = theme === "light" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", mode);
-  try {
-    localStorage.setItem("gestionale_rcv_theme", mode);
-  } catch {}
-  const btn = document.getElementById("themeToggleBtn");
-  if (btn) {
-    btn.textContent = mode === "dark" ? "☀️ Tema Chiaro" : "🌙 Tema Scuro";
-  }
-}
 
 function togglePrivacyMode(forceValue = null) {
   state.privacyMode = forceValue !== null ? forceValue : !state.privacyMode;
   document.body.classList.toggle("privacy-mode", state.privacyMode);
-  const btn = document.getElementById("privacyToggleBtn");
-  if (btn) {
-    btn.textContent = state.privacyMode ? "👁️ Mostra dati sensibili" : "👁️ Oscura dati sensibili";
-  }
 }
 
 async function initApp() {
-  const savedTheme = (typeof localStorage !== "undefined" && localStorage.getItem("gestionale_rcv_theme")) || "dark";
-  applyTheme(savedTheme);
-
-  // Registra Service Worker Online-First (solo asset statici, mai cartelle cliniche)
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   }
 
-  // Binding Login
+  // Login
   document.getElementById("loginForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -4577,38 +4075,29 @@ async function initApp() {
       document.getElementById("practitionerLabel").textContent = res.user?.display_name || "Professionista";
       document.getElementById("loginScreen").style.display = "none";
       document.getElementById("appShell").style.display = "flex";
-      setSaveStatus("saved", "Connesso");
-      const cats = await apiFetch("/api/catalogs", { silentStatus: true });
-      state.catalogs = cats;
-      await refreshCurrentView();
+      setSaveStatus("saved", "Sincronizzato");
+      state.catalogs = await apiFetch("/api/catalogs", { silentStatus: true });
+      await navigateTo("people", { personId: null });
     } catch (err) {
-      if (err.data && err.data.require_totp) {
+      if (err.data?.require_totp) {
         document.getElementById("loginTotpGroup").style.display = "block";
       }
       showLoginScreen(err.message);
     }
   });
 
-  // Binding Navigazione Sidebar e Bottom Bar Mobile
+  // Navigazione
   document.querySelectorAll("[data-nav]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const nav = btn.getAttribute("data-nav");
-      if (nav === "people") {
-        state.selectedPersonId = null;
-      }
+      if (nav === "people") state.selectedPersonId = null;
       await navigateTo(nav);
     });
   });
 
-  // Binding Tema e Privacy Mode
-  document.getElementById("themeToggleBtn")?.addEventListener("click", () => {
-    const curr = document.documentElement.getAttribute("data-theme") || "dark";
-    applyTheme(curr === "dark" ? "light" : "dark");
-  });
   document.getElementById("privacyToggleBtn")?.addEventListener("click", () => togglePrivacyMode());
   document.getElementById("disablePrivacyBtn")?.addEventListener("click", () => togglePrivacyMode(false));
 
-  // Binding Logout
   document.getElementById("logoutBtn")?.addEventListener("click", async () => {
     await apiFetch("/api/auth/logout", { method: "POST", silentStatus: true });
     state.authenticated = false;
@@ -4620,28 +4109,9 @@ async function initApp() {
     showLoginScreen();
   });
 
-  // Binding Azioni Rapide Globali
   document.getElementById("qaNewPersonBtn")?.addEventListener("click", () => showNewPersonModal());
-  document.getElementById("qaNewApptBtn")?.addEventListener("click", () => showNewAppointmentModal());
-  document.getElementById("qaNewPackageBtn")?.addEventListener("click", () => showNewPackageModal());
-  document.getElementById("qaNewEvalBtn")?.addEventListener("click", async () => {
-    if (state.selectedPersonId) {
-      state.selectedPersonTab = "fisio";
-      await navigateTo("people", { personId: state.selectedPersonId, personTab: "fisio" });
-    } else {
-      await navigateTo("people");
-    }
-  });
-  document.getElementById("qaLogSessionBtn")?.addEventListener("click", async () => {
-    if (state.selectedPersonId) {
-      state.selectedPersonTab = "fitness";
-      await navigateTo("people", { personId: state.selectedPersonId, personTab: "fitness" });
-    } else {
-      await navigateTo("agenda");
-    }
-  });
 
-  // Ricerca Rapida Globale
+  // Ricerca globale
   const searchInput = document.getElementById("globalSearchInput");
   const searchDrop = document.getElementById("globalSearchDropdown");
   searchInput?.addEventListener("input", async (e) => {
@@ -4653,42 +4123,44 @@ async function initApp() {
     const res = await apiFetch(`/api/people?q=${encodeURIComponent(q)}&status=tutti`);
     const list = res.people || [];
     if (!list.length) {
-      searchDrop.innerHTML = `<div class="search-result-item" style="color:#64748b;">Nessuna persona trovata</div>`;
+      searchDrop.innerHTML = `<div class="search-result-item" style="color:var(--text-muted);">Nessun risultato</div>`;
     } else {
       searchDrop.innerHTML = list
         .map(
           (p) => `
           <div class="search-result-item" data-search-pick="${p.id}">
             <div>
-              <strong>${esc(p.last_name)} ${esc(p.first_name)}</strong>
-              <div style="font-size:12px; color:#64748b;">${esc(p.phone || "")} · ${esc(p.sport_activity || "")}</div>
+              <div style="font-weight:600;">${esc(p.last_name)} ${esc(p.first_name)}</div>
+              <div style="font-size:12px; color:var(--text-muted);">${esc(p.sport_activity || p.phone || "")}</div>
             </div>
-            <div>
-              ${p.physio_active ? `<span class="badge badge-physio">Fisio</span>` : ""}
-              ${p.fitness_active ? `<span class="badge badge-fitness">Fitness</span>` : ""}
+            <div style="display:flex; gap:4px;">
+              ${p.physio_active ? `<span class="tag tag-accent">Fisio</span>` : ""}
+              ${p.fitness_active ? `<span class="tag">PT</span>` : ""}
             </div>
-          </div>
-        `
+          </div>`
         )
         .join("");
       searchDrop.querySelectorAll("[data-search-pick]").forEach((item) => {
         item.addEventListener("click", async () => {
-          const pid = Number(item.getAttribute("data-search-pick"));
           searchDrop.style.display = "none";
           searchInput.value = "";
-          await navigateTo("people", { personId: pid, personTab: "riepilogo" });
+          await navigateTo("people", { personId: Number(item.getAttribute("data-search-pick")), personTab: "profilo" });
         });
       });
     }
     searchDrop.style.display = "block";
   });
 
-  // Stato iniziale autenticazione
+  document.addEventListener("click", (e) => {
+    if (searchDrop && !e.target.closest(".search-box")) {
+      searchDrop.style.display = "none";
+    }
+  });
+
+  // Stato auth iniziale
   try {
     const status = await apiFetch("/api/auth/status", { silentStatus: true });
-    state.envMode = status.env_mode || "demo";
-    document.getElementById("sidebarEnvBadge").textContent =
-      state.envMode === "demo" ? "Ambiente DEMO (Dati fittizi)" : `Ambiente ${state.envMode.toUpperCase()}`;
+    state.envMode = status.env_mode || "prod";
     if (status.authenticated) {
       state.authenticated = true;
       state.csrfToken = status.csrf_token;
@@ -4696,10 +4168,9 @@ async function initApp() {
       document.getElementById("practitionerLabel").textContent = status.user.display_name;
       document.getElementById("loginScreen").style.display = "none";
       document.getElementById("appShell").style.display = "flex";
-      setSaveStatus("saved", "Connesso");
-      const cats = await apiFetch("/api/catalogs", { silentStatus: true });
-      state.catalogs = cats;
-      await refreshCurrentView();
+      setSaveStatus("saved", "Sincronizzato");
+      state.catalogs = await apiFetch("/api/catalogs", { silentStatus: true });
+      await navigateTo("people", { personId: null });
     } else {
       showLoginScreen();
     }
