@@ -396,8 +396,9 @@ def compute_package_summary(conn: sqlite3.Connection, pkg: Dict[str, Any]) -> Di
     reserved = int(res_row["reserved"] if res_row else 0)
 
     total = int(pkg["total_sessions"])
-    remaining = total - consumed
-    available_to_book = remaining - reserved
+    is_open_single = total == 0
+    remaining = 0 if is_open_single else max(0, total - consumed)
+    available_to_book = 0 if is_open_single else max(0, remaining - reserved)
 
     pay_row = conn.execute(
         """
@@ -435,6 +436,7 @@ def compute_package_summary(conn: sqlite3.Connection, pkg: Dict[str, Any]) -> Di
     result.update(
         {
             "total_sessions": total,
+            "is_open_single": is_open_single,
             "consumed_sessions": consumed,
             "remaining_sessions": remaining,
             "reserved_sessions": reserved,
@@ -457,8 +459,8 @@ def create_package(conn: sqlite3.Connection, payload: Dict[str, Any], actor: str
     if "price_cents" in payload and "price_eur" not in payload:
         price_cents = int(payload["price_cents"])
 
-    if total_sessions <= 0:
-        raise ValidationError("Il numero di sedute del pacchetto deve essere maggiore di zero.")
+    if total_sessions < 0:
+        raise ValidationError("Il numero di sedute del pacchetto non può essere negativo.")
     if price_cents < 0:
         raise ValidationError("Il prezzo non può essere negativo.")
 
@@ -469,7 +471,12 @@ def create_package(conn: sqlite3.Connection, payload: Dict[str, Any], actor: str
     now = now_rome_iso()
     purchased_date = payload.get("purchased_date") or now[:10]
     valid_until = (payload.get("valid_until") or "").strip() or None
-    name = (payload.get("name") or f"Pacchetto {total_sessions} sedute ({service_area.capitalize()})").strip()
+    default_name = (
+        f"Sedute singole ({service_area.capitalize()})"
+        if total_sessions == 0
+        else f"Pacchetto {total_sessions} sedute ({service_area.capitalize()})"
+    )
+    name = (payload.get("name") or default_name).strip()
 
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -497,6 +504,29 @@ def create_package(conn: sqlite3.Connection, payload: Dict[str, Any], actor: str
             ),
         )
         pkg_id = cur.lastrowid
+
+        initial_sessions = max(0, min(50, int(payload.get("initial_sessions") or 0)))
+        if initial_sessions > 0 and (total_sessions == 0 or initial_sessions <= total_sessions):
+            init_ts = f"{purchased_date}T{now[11:]}" if len(purchased_date) == 10 and purchased_date[4] == "-" else now
+            for idx in range(initial_sessions):
+                conn.execute(
+                    """
+                    INSERT INTO package_movements (
+                        package_id, person_id, appointment_id, movement_type, delta_sessions,
+                        reason, idempotency_key, reversed_movement_id, created_at, created_by
+                    ) VALUES (?, ?, NULL, 'CONSUME', 1, ?, ?, NULL, ?, ?)
+                    """,
+                    (
+                        pkg_id,
+                        person_id,
+                        "Seduta singola svolta" if total_sessions == 0 else "Seduta svolta",
+                        f"init_{pkg_id}_{idx}_{secrets.token_hex(5)}",
+                        init_ts,
+                        actor,
+                    ),
+                )
+            if total_sessions > 0 and initial_sessions >= total_sessions:
+                conn.execute("UPDATE packages SET status = 'esaurito', updated_at = ? WHERE id = ?", (now, pkg_id))
 
         initial_payment_cents = int(round(float(payload.get("initial_payment_eur", 0)) * 100))
         if "initial_payment_cents" in payload:
@@ -548,6 +578,7 @@ def record_manual_package_movement(
     if not pkg:
         raise NotFoundError("Pacchetto non trovato.")
     summary = compute_package_summary(conn, pkg)
+    is_open_single = int(pkg["total_sessions"]) == 0
     action = str(payload.get("action") or "consume").lower()
     now = now_rome_iso()
     session_date = (payload.get("session_date") or "").strip()
@@ -555,16 +586,21 @@ def record_manual_package_movement(
     idem_key = f"manual_{package_id}_{secrets.token_hex(6)}"
 
     if action == "consume":
-        if summary["remaining_sessions"] <= 0:
+        if not is_open_single and summary["remaining_sessions"] <= 0:
             raise ValidationError("Nessuna seduta rimanente su questo pacchetto.")
         mov_type, delta = "CONSUME", 1
-        reason = (payload.get("reason") or "Seduta svolta").strip()
-        audit_act, audit_msg = "CONSUME_PACKAGE_SESSION", f"Scalata 1 seduta da '{pkg['name']}' ({reason})"
+        reason = (payload.get("reason") or ("Seduta singola svolta" if is_open_single else "Seduta svolta")).strip()
+        audit_act = "CONSUME_PACKAGE_SESSION"
+        audit_msg = (
+            f"Registrata +1 seduta singola su '{pkg['name']}' ({reason})"
+            if is_open_single
+            else f"Scalata 1 seduta da '{pkg['name']}' ({reason})"
+        )
     elif action in ("undo", "reversal"):
         if summary["consumed_sessions"] <= 0:
             raise ValidationError("Nessuna seduta svolta da ripristinare su questo pacchetto.")
         mov_type, delta = "REVERSAL", -1
-        reason = (payload.get("reason") or "Ripristino seduta").strip()
+        reason = (payload.get("reason") or ("Rimozione seduta singola" if is_open_single else "Ripristino seduta")).strip()
         audit_act, audit_msg = "UNDO_PACKAGE_SESSION", f"Ripristinata 1 seduta su '{pkg['name']}' ({reason})"
     else:
         raise ValidationError("Azione movimento non valida.")
@@ -580,12 +616,78 @@ def record_manual_package_movement(
             """,
             (package_id, pkg["person_id"], mov_type, delta, reason, idem_key, mov_ts, actor),
         )
-        new_rem = summary["remaining_sessions"] - delta
-        if pkg["status"] in ("attivo", "esaurito"):
+        if not is_open_single and pkg["status"] in ("attivo", "esaurito"):
+            new_rem = summary["remaining_sessions"] - delta
             next_status = "esaurito" if new_rem <= 0 else "attivo"
             if next_status != pkg["status"]:
                 conn.execute("UPDATE packages SET status = ?, updated_at = ? WHERE id = ?", (next_status, now, package_id))
         log_audit(conn, audit_act, "packages", package_id, pkg["person_id"], audit_msg, actor=actor)
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
+    fresh = row_to_dict(conn.execute("SELECT * FROM packages WHERE id = ?", (package_id,)).fetchone())
+    return compute_package_summary(conn, fresh)
+
+
+def convert_package(
+    conn: sqlite3.Connection,
+    package_id: int,
+    payload: Dict[str, Any],
+    actor: str = "Professionista",
+) -> Dict[str, Any]:
+    pkg = row_to_dict(conn.execute("SELECT * FROM packages WHERE id = ?", (package_id,)).fetchone())
+    if not pkg:
+        raise NotFoundError("Pacchetto non trovato.")
+    summary = compute_package_summary(conn, pkg)
+    target_total = int(payload.get("total_sessions") or 0)
+    if target_total <= 0:
+        raise ValidationError("Il numero di sedute del pacchetto deve essere maggiore di zero.")
+    if target_total < summary["consumed_sessions"]:
+        raise ValidationError(
+            f"Il pacchetto scelto ({target_total} sedute) è inferiore alle {summary['consumed_sessions']} sedute già svolte."
+        )
+    new_area = payload.get("service_area") or pkg["service_area"]
+    if new_area not in ("fisio", "fitness", "misto"):
+        new_area = pkg["service_area"]
+    new_name = (payload.get("name") or f"Pacchetto {target_total} sedute").strip()
+    new_valid_until = (
+        ((payload.get("valid_until") or "").strip() or None)
+        if "valid_until" in payload
+        else pkg.get("valid_until")
+    )
+    new_notes = str(payload.get("notes") or "").strip() if "notes" in payload else (pkg.get("notes") or "")
+    now = now_rome_iso()
+    next_status = "esaurito" if target_total <= summary["consumed_sessions"] else "attivo"
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            """
+            UPDATE packages SET
+                service_area = ?,
+                name = ?,
+                total_sessions = ?,
+                valid_until = ?,
+                notes = ?,
+                status = ?,
+                version = version + 1,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (new_area, new_name, target_total, new_valid_until, new_notes, next_status, now, package_id),
+        )
+        log_audit(
+            conn,
+            "CONVERT_PACKAGE",
+            "packages",
+            package_id,
+            pkg["person_id"],
+            f"Convertito '{pkg['name']}' ({summary['consumed_sessions']} svolte) in '{new_name}' ({target_total - summary['consumed_sessions']} rimanenti)",
+            actor=actor,
+        )
         conn.commit()
     except Exception:
         if conn.in_transaction:
@@ -721,7 +823,7 @@ def _should_appointment_consume_session(
 
 def _sync_package_status(conn: sqlite3.Connection, package_id: int) -> None:
     pkg = row_to_dict(conn.execute("SELECT * FROM packages WHERE id = ?", (package_id,)).fetchone())
-    if not pkg:
+    if not pkg or int(pkg["total_sessions"]) == 0:
         return
     summary = compute_package_summary(conn, pkg)
     new_status = pkg["status"]

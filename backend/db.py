@@ -341,7 +341,7 @@ CREATE TABLE IF NOT EXISTS packages (
     person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
     service_area TEXT NOT NULL CHECK (service_area IN ('fisio', 'fitness', 'misto')),
     name TEXT NOT NULL,
-    total_sessions INTEGER NOT NULL CHECK (total_sessions > 0),
+    total_sessions INTEGER NOT NULL CHECK (total_sessions >= 0),
     price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
     purchased_date TEXT NOT NULL,
     valid_until TEXT,

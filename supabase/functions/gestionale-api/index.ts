@@ -318,11 +318,13 @@ async function computePackageSummary(pkg: Record<string, any>) {
   );
   const consumed = movements.reduce((acc, m) => acc + Number(m.delta_sessions || 0), 0);
   const total = Number(pkg.total_sessions);
-  const remaining = Math.max(0, total - consumed);
+  const isOpenSingle = total === 0;
+  const remaining = isOpenSingle ? 0 : Math.max(0, total - consumed);
 
   return {
     ...pkg,
     total_sessions: total,
+    is_open_single: isOpenSingle,
     consumed_sessions: consumed,
     remaining_sessions: remaining,
     reserved_sessions: 0,
@@ -623,6 +625,10 @@ async function getActiveConsumptionForAppointment(packageId: number, appointment
 async function syncPackageStatus(packageId: number) {
   const [pkg] = await sql`SELECT * FROM public.packages WHERE id = ${packageId}`;
   if (!pkg) return;
+  if (Number(pkg.total_sessions) === 0) {
+    // Contatore aperto sedute singole: resta 'attivo' salvo sospensione manuale
+    return;
+  }
   const summary = await computePackageSummary(pkg);
   let newStatus = pkg.status;
   if (pkg.status === "attivo" || pkg.status === "esaurito") {
@@ -1144,11 +1150,13 @@ Deno.serve(async (req: Request) => {
             `;
         const packages = Array.from(rows).map((r) => {
           const total = Number(r.total_sessions);
+          const isOpenSingle = total === 0;
           const consumed = Number(r.consumed_sessions || 0);
-          const remaining = Math.max(0, total - consumed);
+          const remaining = isOpenSingle ? 0 : Math.max(0, total - consumed);
           return {
             ...r,
             total_sessions: total,
+            is_open_single: isOpenSingle,
             consumed_sessions: consumed,
             remaining_sessions: remaining,
             reserved_sessions: 0,
@@ -2186,11 +2194,16 @@ Deno.serve(async (req: Request) => {
       const totalSessions = Number(payload.total_sessions);
       let priceCents = Math.round(Number(payload.price_eur ?? Number(payload.price_cents || 0) / 100) * 100);
       if (payload.price_cents !== undefined && payload.price_eur === undefined) priceCents = Number(payload.price_cents);
-      if (totalSessions <= 0) throw new ValidationError("Il numero di sedute deve essere maggiore di zero.");
+      if (Number.isNaN(totalSessions) || totalSessions < 0) {
+        throw new ValidationError("Il numero di sedute non può essere negativo.");
+      }
       const serviceArea = payload.service_area || "fisio";
       const now = nowRomeIso();
       const purchasedDate = payload.purchased_date || now.slice(0, 10);
-      const name = (payload.name || `Pacchetto ${totalSessions} sedute (${serviceArea})`).trim();
+      const name = (
+        payload.name ||
+        (totalSessions === 0 ? `Sedute singole (${serviceArea})` : `Pacchetto ${totalSessions} sedute (${serviceArea})`)
+      ).trim();
 
       const [pkg] = await sql`
         INSERT INTO public.packages (
@@ -2205,6 +2218,24 @@ Deno.serve(async (req: Request) => {
         ) RETURNING *
       `;
 
+      const initialSessions = Math.max(0, Math.min(50, Math.floor(Number(payload.initial_sessions || 0))));
+      if (initialSessions > 0 && (totalSessions === 0 || initialSessions <= totalSessions)) {
+        const initTs = /^\d{4}-\d{2}-\d{2}$/.test(purchasedDate) ? `${purchasedDate}T${now.slice(11)}` : now;
+        for (let i = 0; i < initialSessions; i++) {
+          await sql`
+            INSERT INTO public.package_movements (
+              package_id, person_id, appointment_id, movement_type, delta_sessions,
+              reason, idempotency_key, reversed_movement_id, created_at, created_by
+            ) VALUES (
+              ${pkg.id}, ${personId}, NULL, 'CONSUME', 1,
+              ${totalSessions === 0 ? "Seduta singola svolta" : "Seduta svolta"},
+              ${`init_${pkg.id}_${i}_${Date.now()}_${randomHex(4)}`}, NULL, ${initTs}, ${actor}
+            )
+          `;
+        }
+        await syncPackageStatus(pkg.id);
+      }
+
       let initialPaymentCents = Math.round(Number(payload.initial_payment_eur || 0) * 100);
       if (payload.initial_payment_cents !== undefined) initialPaymentCents = Number(payload.initial_payment_cents);
       if (initialPaymentCents > 0) {
@@ -2217,7 +2248,8 @@ Deno.serve(async (req: Request) => {
           )
         `;
       }
-      return jsonResponse(201, await computePackageSummary(pkg));
+      const [freshCreated] = await sql`SELECT * FROM public.packages WHERE id = ${pkg.id}`;
+      return jsonResponse(201, await computePackageSummary(freshCreated || pkg));
     }
 
     const mPkgMov = path.match(/^\/api\/packages\/(\d+)\/movements$/);
@@ -2226,6 +2258,7 @@ Deno.serve(async (req: Request) => {
       const [currPkg] = await sql`SELECT * FROM public.packages WHERE id = ${pkgId}`;
       if (!currPkg) throw new NotFoundError("Pacchetto non trovato.");
       const summary = await computePackageSummary(currPkg);
+      const isOpenSingle = Number(currPkg.total_sessions) === 0;
       const action = String(payload.action || "consume").toLowerCase();
       const now = nowRomeIso();
       const sessionDate = (payload.session_date || "").trim();
@@ -2233,10 +2266,10 @@ Deno.serve(async (req: Request) => {
       const idemKey = `manual_${pkgId}_${Date.now()}_${randomHex(4)}`;
 
       if (action === "consume") {
-        if (summary.remaining_sessions <= 0) {
+        if (!isOpenSingle && summary.remaining_sessions <= 0) {
           throw new ValidationError("Nessuna seduta rimanente su questo pacchetto.");
         }
-        const reason = (payload.reason || "Seduta svolta").trim();
+        const reason = (payload.reason || (isOpenSingle ? "Seduta singola svolta" : "Seduta svolta")).trim();
         await sql`
           INSERT INTO public.package_movements (
             package_id, person_id, appointment_id, movement_type, delta_sessions,
@@ -2246,12 +2279,19 @@ Deno.serve(async (req: Request) => {
             ${reason}, ${idemKey}, NULL, ${movTimestamp}, ${actor}
           )
         `;
-        await logAudit("CONSUME_PACKAGE_SESSION", "packages", pkgId, currPkg.person_id, `Scalata 1 seduta da '${currPkg.name}' (${reason})`, actor);
+        await logAudit(
+          "CONSUME_PACKAGE_SESSION",
+          "packages",
+          pkgId,
+          currPkg.person_id,
+          isOpenSingle ? `Registrata +1 seduta singola su '${currPkg.name}' (${reason})` : `Scalata 1 seduta da '${currPkg.name}' (${reason})`,
+          actor,
+        );
       } else if (action === "undo" || action === "reversal") {
         if (summary.consumed_sessions <= 0) {
           throw new ValidationError("Nessuna seduta svolta da ripristinare su questo pacchetto.");
         }
-        const reason = (payload.reason || "Ripristino seduta").trim();
+        const reason = (payload.reason || (isOpenSingle ? "Rimozione seduta singola" : "Ripristino seduta")).trim();
         await sql`
           INSERT INTO public.package_movements (
             package_id, person_id, appointment_id, movement_type, delta_sessions,
@@ -2269,6 +2309,55 @@ Deno.serve(async (req: Request) => {
       await syncPackageStatus(pkgId);
       const [freshPkg] = await sql`SELECT * FROM public.packages WHERE id = ${pkgId}`;
       return jsonResponse(200, await computePackageSummary(freshPkg));
+    }
+
+    const mPkgConvert = path.match(/^\/api\/packages\/(\d+)\/convert$/);
+    if (mPkgConvert && method === "POST") {
+      const pkgId = Number(mPkgConvert[1]);
+      const [currPkg] = await sql`SELECT * FROM public.packages WHERE id = ${pkgId}`;
+      if (!currPkg) throw new NotFoundError("Pacchetto non trovato.");
+      const summary = await computePackageSummary(currPkg);
+      const targetTotal = Math.floor(Number(payload.total_sessions || 0));
+      if (Number.isNaN(targetTotal) || targetTotal <= 0) {
+        throw new ValidationError("Il numero di sedute del pacchetto deve essere maggiore di zero.");
+      }
+      if (targetTotal < summary.consumed_sessions) {
+        throw new ValidationError(
+          `Il pacchetto scelto (${targetTotal} sedute) è inferiore alle ${summary.consumed_sessions} sedute già svolte.`,
+        );
+      }
+      const newServiceArea = ["fisio", "fitness", "misto"].includes(payload.service_area)
+        ? payload.service_area
+        : currPkg.service_area;
+      const newName = (payload.name || `Pacchetto ${targetTotal} sedute`).trim();
+      const newValidUntil = payload.valid_until !== undefined ? (payload.valid_until || "").trim() || null : currPkg.valid_until;
+      const newNotes = payload.notes !== undefined ? String(payload.notes || "").trim() : currPkg.notes;
+      const now = nowRomeIso();
+
+      await sql`
+        UPDATE public.packages SET
+          service_area = ${newServiceArea},
+          name = ${newName},
+          total_sessions = ${targetTotal},
+          valid_until = ${newValidUntil},
+          notes = ${newNotes},
+          status = 'attivo',
+          version = version + 1,
+          updated_at = ${now}
+        WHERE id = ${pkgId}
+      `;
+      await syncPackageStatus(pkgId);
+      const [freshPkg] = await sql`SELECT * FROM public.packages WHERE id = ${pkgId}`;
+      const freshSummary = await computePackageSummary(freshPkg);
+      await logAudit(
+        "CONVERT_PACKAGE",
+        "packages",
+        pkgId,
+        currPkg.person_id,
+        `Convertito '${currPkg.name}' (${summary.consumed_sessions} svolte) in '${newName}' (${freshSummary.remaining_sessions} rimanenti)`,
+        actor,
+      );
+      return jsonResponse(200, freshSummary);
     }
 
     const mPkgDel = path.match(/^\/api\/packages\/(\d+)$/);

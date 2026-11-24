@@ -37,6 +37,7 @@ from backend.services import (
     ValidationError,
     add_clinical_addendum,
     compute_package_summary,
+    convert_package,
     create_appointment,
     create_encrypted_backup,
     create_package,
@@ -847,6 +848,12 @@ class GestionaleHTTPHandler(BaseHTTPRequestHandler):
             m_pkg_mov = re.match(r"^/api/packages/(\d+)/movements$", path)
             if m_pkg_mov and method == "POST":
                 pkg = record_manual_package_movement(conn, int(m_pkg_mov.group(1)), payload, actor=actor)
+                self._send_json(200, pkg)
+                return
+
+            m_pkg_conv = re.match(r"^/api/packages/(\d+)/convert$", path)
+            if m_pkg_conv and method == "POST":
+                pkg = convert_package(conn, int(m_pkg_conv.group(1)), payload, actor=actor)
                 self._send_json(200, pkg)
                 return
 
