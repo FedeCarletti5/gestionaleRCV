@@ -3,15 +3,15 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js?v=14";
+} from "./body_map.js?v=15";
 import {
   PCS_ITEMS,
   TSK13_ITEMS,
   computeScaleBreakdown,
   buildClinicalNoteFromBreakdown,
   parseTallyScalesCsv
-} from "./scales.js?v=14";
-import { renderAnamnesisTab } from "./anamnesis.js?v=14";
+} from "./scales.js?v=15";
+import { renderAnamnesisTab } from "./anamnesis.js?v=15";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
@@ -39,6 +39,8 @@ const state = {
   allPeopleSearchCache: null,
   dossierCache: new Map(),
   packagesCache: null,
+  packagesCategoryFilter: "tutti",
+  packagesStatusFilter: "tutti",
   bodyMapDraft: {
     viewSide: "anterior",
     markerKind: "point",
@@ -1402,6 +1404,85 @@ function areaLabel(code) {
   return "Misto";
 }
 
+// ============================================================================
+// CATALOGO PACCHETTI & SEDUTE (FISIO, PT NORMALE, PT SC, PT DUETTO, BlVck)
+// ============================================================================
+
+const PACKAGE_CATALOG = [
+  {
+    key: "fisio",
+    label: "Fisioterapia",
+    description: "Fisioterapia · pacchetto da 5 sedute oppure seduta singola",
+    serviceArea: "fisio",
+    badgeClass: "pkg-tag-fisio",
+    notePlaceholder: "Es. percorso riabilitativo, distretto o note...",
+    presets: [
+      { id: "fisio_5", label: "Pacchetto 5 sedute", sub: "5 sedute", sessions: 5, name: "Fisioterapia · Pacchetto 5 sedute" },
+      { id: "fisio_1", label: "Seduta singola", sub: "1 seduta", sessions: 1, name: "Fisioterapia · Seduta singola" }
+    ]
+  },
+  {
+    key: "pt_normale",
+    label: "PT Normale",
+    description: "Personal Training · pacchetto 10 + 1 (11 sedute totali) oppure seduta singola",
+    serviceArea: "fitness",
+    badgeClass: "pkg-tag-pt",
+    notePlaceholder: "Es. frequenza settimanale, obiettivi...",
+    presets: [
+      { id: "pt_10_1", label: "Pacchetto 10 + 1", sub: "11 sedute totali", sessions: 11, name: "PT Normale · 10+1 (11 sedute)" },
+      { id: "pt_1", label: "Seduta singola", sub: "1 seduta", sessions: 1, name: "PT Normale · Seduta singola" }
+    ]
+  },
+  {
+    key: "pt_sc",
+    label: "PT SC",
+    description: "Sport Conditioning · pacchetto da 10 sedute oppure seduta singola",
+    serviceArea: "fitness",
+    badgeClass: "pkg-tag-sc",
+    notePlaceholder: "Es. sport praticato, fase stagione / return to play...",
+    presets: [
+      { id: "pt_sc_10", label: "Pacchetto 10 sedute", sub: "10 sedute", sessions: 10, name: "PT SC (Sport Conditioning) · 10 sedute" },
+      { id: "pt_sc_1", label: "Seduta singola", sub: "1 seduta", sessions: 1, name: "PT SC (Sport Conditioning) · Seduta singola" }
+    ]
+  },
+  {
+    key: "pt_duetto",
+    label: "PT Duetto",
+    description: "Allenamento in coppia · pacchetto 10 + 1 (11 sedute totali) oppure seduta singola",
+    serviceArea: "fitness",
+    badgeClass: "pkg-tag-duetto",
+    notePlaceholder: "Es. in coppia con (nome compagno/a)...",
+    presets: [
+      { id: "pt_duetto_10_1", label: "Pacchetto 10 + 1", sub: "11 sedute totali", sessions: 11, name: "PT Duetto · 10+1 (11 sedute)" },
+      { id: "pt_duetto_1", label: "Seduta singola", sub: "1 seduta", sessions: 1, name: "PT Duetto · Seduta singola" }
+    ]
+  },
+  {
+    key: "blvck",
+    label: "BlVck",
+    description: "Gestione personalizzata · pacchetti da 10, 5, seduta singola o formula dedicata (listino BlVck)",
+    serviceArea: "fitness",
+    badgeClass: "pkg-tag-blvck",
+    notePlaceholder: "Es. gestione personalizzata / condizioni dedicate BlVck...",
+    presets: [
+      { id: "blvck_10", label: "Pacchetto 10 sedute", sub: "10 sedute", sessions: 10, name: "BlVck · 10 sedute" },
+      { id: "blvck_5", label: "Pacchetto 5 sedute", sub: "5 sedute", sessions: 5, name: "BlVck · 5 sedute" },
+      { id: "blvck_1", label: "Seduta singola", sub: "1 seduta", sessions: 1, name: "BlVck · Seduta singola" },
+      { id: "blvck_custom", label: "Personalizzato", sub: "Sedute libere", sessions: null, name: "BlVck · Personalizzato", custom: true }
+    ]
+  }
+];
+
+function inferPackageCategory(pkg) {
+  const name = String(pkg?.name || "").toLowerCase();
+  if (name.includes("blvck")) return PACKAGE_CATALOG[4];
+  if (name.includes("duetto")) return PACKAGE_CATALOG[3];
+  if (name.includes("pt sc") || name.includes("sport conditioning")) return PACKAGE_CATALOG[2];
+  if (name.includes("pt normale") || name.includes("personal training") || /^pt\b/.test(name)) return PACKAGE_CATALOG[1];
+  if (pkg?.service_area === "fisio" || name.includes("fisio")) return PACKAGE_CATALOG[0];
+  return PACKAGE_CATALOG[1];
+}
+
 function renderPersonTabPacchetti(viewport, dossier) {
   const p = dossier.person;
   const packages = dossier.packages || [];
@@ -1409,6 +1490,7 @@ function renderPersonTabPacchetti(viewport, dossier) {
   const pkgCards = packages.length
     ? packages
         .map((pkg) => {
+          const cat = inferPackageCategory(pkg);
           const movRows = (pkg.movements || [])
             .map(
               (m) => `
@@ -1428,8 +1510,8 @@ function renderPersonTabPacchetti(viewport, dossier) {
               <div class="card-header" style="margin-bottom:12px;">
                 <div>
                   <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                    <span class="tag ${cat.badgeClass}">${esc(cat.label)}</span>
                     <h4 class="card-title">${esc(pkg.name)}</h4>
-                    <span class="tag">${areaLabel(pkg.service_area)}</span>
                     <span class="tag ${pkg.status === "attivo" ? "tag-accent" : pkg.status === "esaurito" ? "" : "tag-warning"}">${esc(pkg.status)}</span>
                   </div>
                   <div class="card-subtitle num">Inizio ${formatDateIt(pkg.purchased_date)}${pkg.valid_until ? ` · Scadenza ${formatDateIt(pkg.valid_until)}` : ""}${pkg.notes ? ` · ${esc(pkg.notes)}` : ""}</div>
@@ -1475,12 +1557,12 @@ function renderPersonTabPacchetti(viewport, dossier) {
           `;
         })
         .join("")
-    : `<div class="card"><div class="empty-state">Nessun pacchetto attivo per questa persona.</div></div>`;
+    : `<div class="card"><div class="empty-state">Nessun pacchetto o seduta registrata per questa persona.</div></div>`;
 
   viewport.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <h3 class="card-title">Pacchetti sedute</h3>
-      <button class="btn btn-sm btn-primary" id="personNewPkgBtn">${ico("plus")} Nuovo pacchetto</button>
+      <h3 class="card-title">Pacchetti e sedute</h3>
+      <button class="btn btn-sm btn-primary" id="personNewPkgBtn">${ico("plus")} Nuovo pacchetto / seduta</button>
     </div>
     ${pkgCards}
   `;
@@ -1657,11 +1739,23 @@ async function renderPackagesView(container) {
     state.packagesCache = packages;
   }
 
-  const activePkgs = packages.filter((k) => k.status === "attivo");
+  const enriched = packages.map((pkg) => ({ ...pkg, _cat: inferPackageCategory(pkg) }));
+  const activePkgs = enriched.filter((k) => k.status === "attivo");
   const remainingTotal = activePkgs.reduce((a, k) => a + Number(k.remaining_sessions || 0), 0);
   const lowCount = activePkgs.filter((k) => Number(k.remaining_sessions || 0) <= 2).length;
 
-  const rows = packages
+  const filtered = enriched.filter((k) => {
+    if (state.packagesCategoryFilter !== "tutti" && k._cat.key !== state.packagesCategoryFilter) return false;
+    if (state.packagesStatusFilter !== "tutti" && k.status !== state.packagesStatusFilter) return false;
+    return true;
+  });
+
+  const catCounts = {};
+  for (const c of PACKAGE_CATALOG) {
+    catCounts[c.key] = enriched.filter((k) => k._cat.key === c.key).length;
+  }
+
+  const rows = filtered
     .map(
       (pkg) => `
       <tr>
@@ -1671,11 +1765,12 @@ async function renderPackagesView(container) {
           </a>
         </td>
         <td>
-          <div style="font-weight:500;">${esc(pkg.name)}</div>
-          <div style="display:flex; gap:4px; margin-top:3px;">
-            <span class="tag">${areaLabel(pkg.service_area)}</span>
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span class="tag ${pkg._cat.badgeClass}">${esc(pkg._cat.label)}</span>
+            <span style="font-weight:500;">${esc(pkg.name)}</span>
             ${pkg.status !== "attivo" ? `<span class="tag">${esc(pkg.status)}</span>` : ""}
           </div>
+          ${pkg.notes ? `<div style="font-size:12px; color:var(--text-muted); margin-top:2px;">${esc(pkg.notes)}</div>` : ""}
         </td>
         <td style="min-width:140px;">
           <div class="num" style="font-size:12.5px; color:var(--text-secondary); margin-bottom:4px;">${pkg.consumed_sessions} / ${pkg.total_sessions} svolte</div>
@@ -1697,8 +1792,8 @@ async function renderPackagesView(container) {
 
   container.innerHTML = `
     <div class="page-header">
-      <h1 class="page-title">Pacchetti <span class="count-pill num">${packages.length}</span></h1>
-      <button class="btn btn-primary" id="globalNewPkgBtn">${ico("plus")} <span>Nuovo pacchetto</span></button>
+      <h1 class="page-title">Pacchetti <span class="count-pill num">${filtered.length}</span></h1>
+      <button class="btn btn-primary" id="globalNewPkgBtn">${ico("plus")} <span>Nuovo pacchetto / seduta</span></button>
     </div>
 
     <div class="grid-3" style="margin-bottom:16px;">
@@ -1708,24 +1803,50 @@ async function renderPackagesView(container) {
     </div>
 
     <div class="card card-flush">
+      <div class="toolbar">
+        <div class="segmented" role="group" aria-label="Filtro tipologia pacchetto" style="flex-wrap:wrap;">
+          <button type="button" class="seg-btn ${state.packagesCategoryFilter === "tutti" ? "active" : ""}" data-pkg-cat-filter="tutti">Tutti (${enriched.length})</button>
+          ${PACKAGE_CATALOG.map(
+            (c) =>
+              `<button type="button" class="seg-btn ${state.packagesCategoryFilter === c.key ? "active" : ""}" data-pkg-cat-filter="${c.key}">${esc(c.label)}${catCounts[c.key] ? ` (${catCounts[c.key]})` : ""}</button>`
+          ).join("")}
+        </div>
+        <select class="form-control form-control-sm" id="pkgStatusFilterSelect" style="width:auto; min-width:130px;">
+          <option value="tutti" ${state.packagesStatusFilter === "tutti" ? "selected" : ""}>Tutti gli stati</option>
+          <option value="attivo" ${state.packagesStatusFilter === "attivo" ? "selected" : ""}>Solo attivi</option>
+          <option value="esaurito" ${state.packagesStatusFilter === "esaurito" ? "selected" : ""}>Esauriti</option>
+          <option value="sospeso" ${state.packagesStatusFilter === "sospeso" ? "selected" : ""}>Sospesi</option>
+        </select>
+      </div>
+
       <div class="table-wrap">
         <table class="data-table">
           <thead>
             <tr>
               <th>Persona</th>
-              <th>Pacchetto</th>
+              <th>Tipologia e pacchetto</th>
               <th>Progresso</th>
               <th>Rimanenti</th>
               <th style="text-align:right;"></th>
             </tr>
           </thead>
-          <tbody>${rows || `<tr><td colspan="5" class="empty-state">Nessun pacchetto registrato.</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="5" class="empty-state">Nessun pacchetto trovato con i filtri selezionati.</td></tr>`}</tbody>
         </table>
       </div>
     </div>
   `;
 
   document.getElementById("globalNewPkgBtn")?.addEventListener("click", () => showNewPackageModal());
+  container.querySelectorAll("[data-pkg-cat-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.packagesCategoryFilter = btn.getAttribute("data-pkg-cat-filter") || "tutti";
+      renderPackagesView(container);
+    });
+  });
+  document.getElementById("pkgStatusFilterSelect")?.addEventListener("change", (e) => {
+    state.packagesStatusFilter = e.target.value;
+    renderPackagesView(container);
+  });
   bindPackageActions(container);
   bindCommonActionButtons(container);
 }
@@ -2379,58 +2500,168 @@ async function showNewPackageModal(preselectedPersonId = null) {
     state.allPeopleSearchCache = people;
   }
   const selectedPid = preselectedPersonId || state.selectedPersonId || people[0]?.id;
+  const selectedPerson = people.find((p) => p.id === selectedPid);
+  let activeCatKey = selectedPerson?.primary_area === "fitness" ? "pt_normale" : "fisio";
+  let activePresetId = PACKAGE_CATALOG.find((c) => c.key === activeCatKey).presets[0].id;
 
   openModal(`
-    <h2 class="modal-title">Nuovo pacchetto sedute</h2>
+    <h2 class="modal-title">Nuovo pacchetto o seduta singola</h2>
     <form id="newPkgModalForm">
+      <input type="hidden" name="service_area" id="pkgServiceAreaInput" value="fisio" />
+
+      <div class="form-group">
+        <label class="form-label">Persona *</label>
+        <select class="form-control" name="person_id" id="pkgPersonSelect" required>
+          ${people.map((p) => `<option value="${p.id}" ${p.id === selectedPid ? "selected" : ""}>${esc(p.last_name)} ${esc(p.first_name)}</option>`).join("")}
+        </select>
+      </div>
+
+      <div class="form-group" style="margin-bottom:8px;">
+        <label class="form-label">Tipologia</label>
+        <div class="pkg-cat-pills" id="pkgCatPills">
+          ${PACKAGE_CATALOG.map(
+            (c) =>
+              `<button type="button" class="pkg-cat-pill ${c.key === "blvck" ? "pill-blvck" : ""} ${c.key === activeCatKey ? "active" : ""}" data-pkg-cat="${c.key}">${esc(c.label)}</button>`
+          ).join("")}
+        </div>
+        <p class="pkg-cat-desc" id="pkgCatDesc"></p>
+      </div>
+
+      <div class="form-group" style="margin-bottom:8px;">
+        <label class="form-label">Formula</label>
+        <div class="pkg-preset-grid" id="pkgPresetGrid"></div>
+      </div>
+
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">Persona *</label>
-          <select class="form-control" name="person_id" required>
-            ${people.map((p) => `<option value="${p.id}" ${p.id === selectedPid ? "selected" : ""}>${esc(p.last_name)} ${esc(p.first_name)}</option>`).join("")}
-          </select>
+          <label class="form-label">Nome pacchetto *</label>
+          <input class="form-control" name="name" id="pkgNameInput" required />
         </div>
         <div class="form-group">
-          <label class="form-label">Tipo</label>
-          <select class="form-control" name="service_area">
-            <option value="fisio">Fisioterapia</option>
-            <option value="fitness">Personal Training</option>
-            <option value="misto">Misto</option>
-          </select>
+          <label class="form-label">Numero sedute *</label>
+          <input class="form-control" type="number" name="total_sessions" id="pkgSessionsInput" min="1" required />
         </div>
       </div>
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Nome pacchetto *</label><input class="form-control" name="name" value="Pacchetto 10 sedute" required /></div>
-        <div class="form-group"><label class="form-label">Numero sedute *</label><input class="form-control" type="number" name="total_sessions" value="10" min="1" required /></div>
+
+      <div id="pkgConsumeNowWrap" style="display:none; margin:-2px 0 12px;">
+        <label class="anam-toggle-row" style="font-size:12.5px;">
+          <span class="toggle-switch">
+            <input type="checkbox" id="pkgConsumeNowCheck" />
+            <span class="toggle-track"></span>
+          </span>
+          <span class="anam-toggle-label">Segna subito questa seduta singola come già svolta (1/1)</span>
+        </label>
       </div>
+
       <div class="grid-2">
         <div class="form-group"><label class="form-label">Data inizio</label><input class="form-control" type="date" name="purchased_date" value="${todayRomeStr()}" required /></div>
         <div class="form-group"><label class="form-label">Scadenza (opzionale)</label><input class="form-control" type="date" name="valid_until" /></div>
       </div>
-      <div class="form-group"><label class="form-label">Note (opzionale)</label><input class="form-control" name="notes" /></div>
+
+      <div class="form-group">
+        <label class="form-label">Note (opzionale)</label>
+        <input class="form-control" name="notes" id="pkgNotesInput" />
+      </div>
+
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelPkgModalBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Crea pacchetto</button>
+        <button type="submit" class="btn btn-primary" id="submitPkgModalBtn">Crea pacchetto</button>
       </div>
     </form>
   `);
+
+  const areaInput = document.getElementById("pkgServiceAreaInput");
+  const nameInput = document.getElementById("pkgNameInput");
+  const sessionsInput = document.getElementById("pkgSessionsInput");
+  const notesInput = document.getElementById("pkgNotesInput");
+  const catDescEl = document.getElementById("pkgCatDesc");
+  const presetGrid = document.getElementById("pkgPresetGrid");
+  const consumeNowWrap = document.getElementById("pkgConsumeNowWrap");
+  const consumeNowCheck = document.getElementById("pkgConsumeNowCheck");
+  const submitBtn = document.getElementById("submitPkgModalBtn");
+
+  const syncSingleToggleVisibility = () => {
+    const isSingle = Number(sessionsInput?.value || 0) === 1;
+    if (consumeNowWrap) consumeNowWrap.style.display = isSingle ? "block" : "none";
+    if (!isSingle && consumeNowCheck) consumeNowCheck.checked = false;
+    if (submitBtn) submitBtn.textContent = isSingle ? "Registra seduta singola" : "Crea pacchetto";
+  };
+
+  const applyCategoryAndPreset = (catKey, presetId = null) => {
+    const cat = PACKAGE_CATALOG.find((c) => c.key === catKey) || PACKAGE_CATALOG[0];
+    activeCatKey = cat.key;
+    const preset = cat.presets.find((pr) => pr.id === presetId) || cat.presets[0];
+    activePresetId = preset.id;
+
+    if (areaInput) areaInput.value = cat.serviceArea;
+    if (catDescEl) catDescEl.textContent = cat.description;
+    if (notesInput) notesInput.placeholder = cat.notePlaceholder;
+
+    document.querySelectorAll("#pkgCatPills [data-pkg-cat]").forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-pkg-cat") === cat.key);
+    });
+
+    if (presetGrid) {
+      presetGrid.innerHTML = cat.presets
+        .map(
+          (pr) => `
+          <button type="button" class="pkg-preset-card ${cat.key === "blvck" ? "is-blvck" : ""} ${pr.id === activePresetId ? "active" : ""}" data-pkg-preset="${pr.id}">
+            <span class="pkg-preset-title">${esc(pr.label)}</span>
+            <span class="pkg-preset-sub">${esc(pr.sub)}</span>
+          </button>`
+        )
+        .join("");
+
+      presetGrid.querySelectorAll("[data-pkg-preset]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          applyCategoryAndPreset(activeCatKey, btn.getAttribute("data-pkg-preset"));
+        });
+      });
+    }
+
+    if (nameInput) nameInput.value = preset.name;
+    if (sessionsInput) {
+      if (preset.sessions !== null) {
+        sessionsInput.value = String(preset.sessions);
+      } else {
+        if (!sessionsInput.value || Number(sessionsInput.value) < 1) sessionsInput.value = "10";
+        sessionsInput.focus();
+        sessionsInput.select?.();
+      }
+    }
+    syncSingleToggleVisibility();
+  };
+
+  document.querySelectorAll("#pkgCatPills [data-pkg-cat]").forEach((btn) => {
+    btn.addEventListener("click", () => applyCategoryAndPreset(btn.getAttribute("data-pkg-cat")));
+  });
+  sessionsInput?.addEventListener("input", syncSingleToggleVisibility);
+  applyCategoryAndPreset(activeCatKey, activePresetId);
+
   document.getElementById("cancelPkgModalBtn")?.addEventListener("click", closeModal);
   document.getElementById("newPkgModalForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    await apiFetch("/api/packages", {
+    const totalSessions = Number(fd.get("total_sessions"));
+    const created = await apiFetch("/api/packages", {
       method: "POST",
       body: {
         person_id: Number(fd.get("person_id")),
         service_area: fd.get("service_area"),
         name: fd.get("name"),
-        total_sessions: Number(fd.get("total_sessions")),
+        total_sessions: totalSessions,
         price_eur: 0,
         purchased_date: fd.get("purchased_date"),
         valid_until: fd.get("valid_until"),
         notes: fd.get("notes")
       }
     });
+    if (totalSessions === 1 && consumeNowCheck?.checked && created?.id) {
+      await apiFetch(`/api/packages/${created.id}/movements`, {
+        method: "POST",
+        body: { action: "consume", reason: "Seduta singola svolta" }
+      });
+    }
     closeModal();
     await refreshCurrentView();
   });
