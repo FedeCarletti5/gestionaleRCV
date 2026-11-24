@@ -32,7 +32,7 @@ export const ADDITIONAL_INFO_SECTIONS = [
   { key: "alterazione_sonno", label: "Alterazione del sonno", placeholder: "Difficoltà ad addormentarsi, risvegli notturni, posizione..." },
   { key: "aggravanti_allevianti", label: "Fattori Aggravanti/Allevianti", placeholder: "Andamento 24 ore, carichi, posture, cosa migliora/peggiora..." },
   { key: "evoluzione", label: "Evoluzione della problematica", placeholder: "In miglioramento, stabile, in peggioramento, decorso nel tempo..." },
-  { key: "preoccupazione_ansia", label: "Preoccupazione/Ansia", placeholder: "Timori del paziente, convinzioni sul problema, impatto emotivo...", amber: true },
+  { key: "preoccupazione_ansia", label: "Preoccupazione/Ansia", placeholder: "Timori del paziente, convinzioni sul problema, impatto emotivo..." },
   { key: "limitazione_adl", label: "Limitazione delle ADL", placeholder: "Attività di vita quotidiana limitate (vestirsi, guidare, lavoro, casa)..." },
   { key: "limitazione_sport", label: "Limitazione dell'attività sportiva", placeholder: "Sport praticati, cosa è sospeso o ridotto, obiettivi di rientro..." },
   { key: "esami_diagnostici", label: "Esami diagnostici effettuati", placeholder: "RX, RMN, ecografie, visite specialistiche e relativi esiti..." },
@@ -204,7 +204,17 @@ function strokeToSvgPath(points) {
 
 const BODY_VB_W = 1000;
 const BODY_VB_H = 671;
-const HAS_FEMALE_BODY_CHART = false;
+
+const BODY_CHART_VARIANTS = {
+  male: {
+    href: "./assets/body_chart.png?v=14",
+    labels: { dorso: 65, anteriore: 173, posteriore: 833, pianta: 936 }
+  },
+  female: {
+    href: "./assets/body_chart_female.png?v=14",
+    labels: { dorso: 77, anteriore: 168, posteriore: 832, pianta: 926 }
+  }
+};
 
 function isFemaleGender(gender) {
   const g = String(gender || "").trim().toLowerCase();
@@ -263,10 +273,7 @@ function applyBrushSliderVisual(slider, color) {
  * L'immagine di base è un asset statico (0 byte su Supabase); nel DB salviamo solo i tratti vettoriali.
  */
 function renderBodyChartSvg(strokes = [], variant = "male") {
-  const imgHref =
-    variant === "female" && HAS_FEMALE_BODY_CHART
-      ? "./assets/body_chart_female.png?v=13"
-      : "./assets/body_chart.png?v=13";
+  const cfg = BODY_CHART_VARIANTS[variant === "female" ? "female" : "male"];
 
   const strokePaths = (strokes || [])
     .map(
@@ -288,7 +295,7 @@ function renderBodyChartSvg(strokes = [], variant = "male") {
       <rect x="0" y="0" width="${BODY_VB_W}" height="${BODY_VB_H}" fill="#ffffff" />
       <image
         id="bodyChartBgImg"
-        href="${imgHref}"
+        href="${cfg.href}"
         x="0"
         y="0"
         width="${BODY_VB_W}"
@@ -304,11 +311,11 @@ function renderBodyChartSvg(strokes = [], variant = "male") {
         <text x="748" y="34">SX</text>
         <text x="918" y="34">DX</text>
         <text x="500" y="334">LATO DX</text>
-        <text x="65" y="656">DORSO</text>
-        <text x="173" y="656">ANTERIORE</text>
+        <text id="bcLblDorso" x="${cfg.labels.dorso}" y="656">DORSO</text>
+        <text id="bcLblAnteriore" x="${cfg.labels.anteriore}" y="656">ANTERIORE</text>
         <text x="500" y="656">LATO SX</text>
-        <text x="833" y="656">POSTERIORE</text>
-        <text x="936" y="656">PIANTA</text>
+        <text id="bcLblPosteriore" x="${cfg.labels.posteriore}" y="656">POSTERIORE</text>
+        <text id="bcLblPianta" x="${cfg.labels.pianta}" y="656">PIANTA</text>
       </g>
 
       <!-- Tratti disegnati a mano libera -->
@@ -526,6 +533,10 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
         <div class="card-header" style="margin-bottom:12px;">
           <h3 class="card-title">Body chart</h3>
           <div class="body-chart-toolbar">
+            <div class="bc-variant-switch" role="group" aria-label="Modello anatomico">
+              <button type="button" class="bc-variant-btn ${bodyChartVariant !== "female" ? "active" : ""}" data-bc-variant="male">Uomo</button>
+              <button type="button" class="bc-variant-btn ${bodyChartVariant === "female" ? "active" : ""}" data-bc-variant="female">Donna</button>
+            </div>
             <label class="anam-toggle-row" style="margin:0;">
               <span class="toggle-switch">
                 <input type="checkbox" id="bcDrawToggle" checked />
@@ -804,6 +815,23 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
   const widthSlider = document.getElementById("bcWidthSlider");
   const widthVal = document.getElementById("bcWidthVal");
   applyBrushSliderVisual(widthSlider, brushColor);
+
+  viewport.querySelectorAll("[data-bc-variant]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const next = btn.getAttribute("data-bc-variant") === "female" ? "female" : "male";
+      if (next === bodyChartVariant) return;
+      bodyChartVariant = next;
+      const cfg = BODY_CHART_VARIANTS[bodyChartVariant];
+      const bgImg = document.getElementById("bodyChartBgImg");
+      if (bgImg) bgImg.setAttribute("href", cfg.href);
+      document.getElementById("bcLblDorso")?.setAttribute("x", String(cfg.labels.dorso));
+      document.getElementById("bcLblAnteriore")?.setAttribute("x", String(cfg.labels.anteriore));
+      document.getElementById("bcLblPosteriore")?.setAttribute("x", String(cfg.labels.posteriore));
+      document.getElementById("bcLblPianta")?.setAttribute("x", String(cfg.labels.pianta));
+      viewport.querySelectorAll("[data-bc-variant]").forEach((b) => b.classList.toggle("active", b === btn));
+      markDirty();
+    });
+  });
 
   viewport.querySelectorAll("[data-ink-color]").forEach((dot) => {
     dot.addEventListener("click", () => {

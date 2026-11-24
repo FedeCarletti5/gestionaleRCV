@@ -3,15 +3,15 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js?v=13";
+} from "./body_map.js?v=14";
 import {
   PCS_ITEMS,
   TSK13_ITEMS,
   computeScaleBreakdown,
   buildClinicalNoteFromBreakdown,
   parseTallyScalesCsv
-} from "./scales.js?v=13";
-import { renderAnamnesisTab } from "./anamnesis.js?v=13";
+} from "./scales.js?v=14";
+import { renderAnamnesisTab } from "./anamnesis.js?v=14";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
