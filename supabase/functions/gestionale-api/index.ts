@@ -299,61 +299,40 @@ async function logAudit(
     INSERT INTO public.audit_logs (timestamp, actor, action, entity_type, entity_id, person_id, summary)
     VALUES (${nowRomeIso()}, ${actor}, ${action}, ${entityType}, ${entityId}, ${personId}, ${summary})
   `;
+  // Mantieni al massimo gli ultimi 300 record di audit (piano Free leggero)
+  await sql`
+    DELETE FROM public.audit_logs
+    WHERE id < COALESCE((SELECT id FROM public.audit_logs ORDER BY id DESC OFFSET 300 LIMIT 1), 0)
+  `;
 }
 
 async function computePackageSummary(pkg: Record<string, any>) {
   const pkgId = pkg.id;
-  const [movRow] = await sql`
-    SELECT COALESCE(SUM(delta_sessions), 0)::int AS consumed
-    FROM public.package_movements
-    WHERE package_id = ${pkgId}
-  `;
-  const consumed = Number(movRow?.consumed || 0);
-
-  const [resRow] = await sql`
-    SELECT COUNT(*)::int AS reserved
-    FROM public.appointments
-    WHERE package_id = ${pkgId} AND out_of_package = 0 AND status IN ('prenotato', 'confermato')
-  `;
-  const reserved = Number(resRow?.reserved || 0);
-
+  const movements = Array.from(
+    await sql`
+      SELECT id, package_id, person_id, movement_type, delta_sessions, reason, created_at
+      FROM public.package_movements
+      WHERE package_id = ${pkgId}
+      ORDER BY id DESC
+    `,
+  );
+  const consumed = movements.reduce((acc, m) => acc + Number(m.delta_sessions || 0), 0);
   const total = Number(pkg.total_sessions);
-  const remaining = total - consumed;
-  const availableToBook = remaining - reserved;
-
-  const [payRow] = await sql`
-    SELECT COALESCE(SUM(CASE WHEN is_refund = 1 THEN -amount_cents ELSE amount_cents END), 0)::int AS paid
-    FROM public.payments
-    WHERE package_id = ${pkgId}
-  `;
-  const paidCents = Number(payRow?.paid || 0);
-  const priceCents = Number(pkg.price_cents);
-  const dueCents = Math.max(0, priceCents - paidCents);
-
-  let paymentStatus = "non_pagato";
-  if (priceCents === 0 || dueCents === 0) paymentStatus = "saldato";
-  else if (paidCents > 0) paymentStatus = "parziale";
-
-  const movements = await sql`
-    SELECT * FROM public.package_movements WHERE package_id = ${pkgId} ORDER BY id DESC
-  `;
-  const payments = await sql`
-    SELECT * FROM public.payments WHERE package_id = ${pkgId} ORDER BY payment_date DESC, id DESC
-  `;
+  const remaining = Math.max(0, total - consumed);
 
   return {
     ...pkg,
     total_sessions: total,
     consumed_sessions: consumed,
     remaining_sessions: remaining,
-    reserved_sessions: reserved,
-    available_to_book: availableToBook,
-    paid_cents: paidCents,
-    due_cents: dueCents,
-    payment_status: paymentStatus,
+    reserved_sessions: 0,
+    available_to_book: remaining,
+    paid_cents: 0,
+    due_cents: 0,
+    payment_status: "saldato",
     suspensions: JSON.parse(pkg.suspensions_json || "[]"),
-    movements: Array.from(movements),
-    payments: Array.from(payments),
+    movements,
+    payments: [],
   };
 }
 
@@ -478,82 +457,36 @@ async function getPersonFullDossier(personId: number) {
   const [person] = await sql`SELECT * FROM public.people WHERE id = ${personId}`;
   if (!person) throw new NotFoundError("Persona non trovata.");
 
-  const epIds = await sql`
-    SELECT id FROM public.physio_episodes WHERE person_id = ${personId} ORDER BY start_date DESC, id DESC
-  `;
-  const physioEpisodes = [];
-  for (const r of epIds) physioEpisodes.push(await getPhysioEpisodeDetail(r.id));
+  const [epIds, sharedLimitationsRows, pkgRows, consentsRows, attachmentsRows, auditHistoryRows] = await Promise.all([
+    sql`SELECT id FROM public.physio_episodes WHERE person_id = ${personId} ORDER BY start_date DESC, id DESC`,
+    sql`SELECT * FROM public.shared_limitations WHERE person_id = ${personId} ORDER BY recorded_date DESC, id DESC`,
+    sql`SELECT * FROM public.packages WHERE person_id = ${personId} ORDER BY purchased_date DESC, id DESC`,
+    sql`SELECT * FROM public.consents WHERE person_id = ${personId} ORDER BY id DESC`,
+    sql`SELECT * FROM public.attachments WHERE person_id = ${personId} ORDER BY uploaded_at DESC`,
+    sql`SELECT id, timestamp, actor, action, summary FROM public.audit_logs WHERE person_id = ${personId} ORDER BY id DESC LIMIT 20`,
+  ]);
 
-  const [fitnessProfile] = await sql`SELECT * FROM public.fitness_profiles WHERE person_id = ${personId}`;
-  const progIds = await sql`
-    SELECT id FROM public.fitness_programs WHERE person_id = ${personId} ORDER BY start_date DESC, id DESC
-  `;
-  const fitnessPrograms = [];
-  for (const r of progIds) fitnessPrograms.push(await getFitnessProgramDetail(r.id));
+  const physioEpisodes = await Promise.all(Array.from(epIds).map((r) => getPhysioEpisodeDetail(r.id)));
+  const packages = await Promise.all(Array.from(pkgRows).map((p) => computePackageSummary(p)));
+  const sharedLimitations = Array.from(sharedLimitationsRows);
+  const consents = Array.from(consentsRows);
+  const attachments = Array.from(attachmentsRows);
+  const auditHistory = Array.from(auditHistoryRows);
 
-  const workoutLogsRows = await sql`
-    SELECT * FROM public.workout_logs WHERE person_id = ${personId} ORDER BY session_date DESC, id DESC
-  `;
-  const workoutLogs = Array.from(workoutLogsRows).map((wl) => ({
-    ...wl,
-    planned_exercises: JSON.parse(wl.planned_exercises_json || "[]"),
-    actual_exercises: JSON.parse(wl.actual_exercises_json || "[]"),
-  }));
-
-  const fitnessMetrics = Array.from(
-    await sql`SELECT * FROM public.fitness_metrics WHERE person_id = ${personId} ORDER BY recorded_date ASC, id ASC`,
-  );
-  const sharedLimitations = Array.from(
-    await sql`SELECT * FROM public.shared_limitations WHERE person_id = ${personId} ORDER BY recorded_date DESC, id DESC`,
-  );
-
-  const pkgRows = await sql`
-    SELECT * FROM public.packages WHERE person_id = ${personId} ORDER BY purchased_date DESC, id DESC
-  `;
-  const packages = [];
-  for (const p of pkgRows) packages.push(await computePackageSummary(p));
-
-  const payments = Array.from(
-    await sql`SELECT * FROM public.payments WHERE person_id = ${personId} ORDER BY payment_date DESC, id DESC`,
-  );
-  const appointments = Array.from(
-    await sql`SELECT * FROM public.appointments WHERE person_id = ${personId} ORDER BY start_at DESC`,
-  );
-  const consents = Array.from(
-    await sql`SELECT * FROM public.consents WHERE person_id = ${personId} ORDER BY id DESC`,
-  );
-  const attachments = Array.from(
-    await sql`SELECT * FROM public.attachments WHERE person_id = ${personId} ORDER BY uploaded_at DESC`,
-  );
-  const auditHistory = Array.from(
-    await sql`SELECT * FROM public.audit_logs WHERE person_id = ${personId} ORDER BY id DESC LIMIT 100`,
-  );
-
-  const totalDueCents = packages
-    .filter((p) => p.status !== "annullato")
-    .reduce((acc, p) => acc + Number(p.due_cents || 0), 0);
-  const totalAvailableSessions = packages
-    .filter((p) => p.status === "attivo")
-    .reduce((acc, p) => acc + Number(p.available_to_book || 0), 0);
   const totalRemainingSessions = packages
     .filter((p) => p.status === "attivo")
     .reduce((acc, p) => acc + Number(p.remaining_sessions || 0), 0);
-  const nowIso = nowRomeIso();
-  const upcomingAppts = appointments
-    .filter((a) => (a.status === "prenotato" || a.status === "confermato") && a.end_at >= nowIso)
-    .sort((a, b) => String(a.start_at).localeCompare(String(b.start_at)));
-  const nextAppointment = upcomingAppts[0] || null;
 
   return {
     person,
     summary: {
       active_physio_episodes: physioEpisodes.filter((e) => e.status === "attivo").length,
-      active_fitness_programs: fitnessPrograms.filter((p) => p.status === "attivo").length,
+      active_fitness_programs: 0,
       active_shared_limitations: sharedLimitations.filter((l) => l.is_active).length,
-      total_available_sessions: totalAvailableSessions,
+      total_available_sessions: totalRemainingSessions,
       total_remaining_sessions: totalRemainingSessions,
-      next_appointment: nextAppointment,
-      total_due_cents: totalDueCents,
+      next_appointment: null,
+      total_due_cents: 0,
       has_privacy_notice: consents.some((c) => c.doc_type === "informativa_privacy" && c.status === "acquisito"),
       has_health_consent: consents.some(
         (c) => c.doc_type === "consenso_trattamento_sanitario" && c.status === "acquisito",
@@ -562,14 +495,14 @@ async function getPersonFullDossier(personId: number) {
     shared_limitations: sharedLimitations,
     physio: { episodes: physioEpisodes },
     fitness: {
-      profile: fitnessProfile || null,
-      programs: fitnessPrograms,
-      workout_logs: workoutLogs,
-      metrics: fitnessMetrics,
+      profile: null,
+      programs: [],
+      workout_logs: [],
+      metrics: [],
     },
-    appointments,
+    appointments: [],
     packages,
-    payments,
+    payments: [],
     consents,
     attachments,
     audit_history: auditHistory,
@@ -721,7 +654,7 @@ async function authenticateRequest(req: Request, url: URL) {
   const tHash = await sha256Hex(rawToken);
   const now = nowRomeIso();
   const [row] = await sql`
-    SELECT s.id AS session_id, s.csrf_token, s.expires_at,
+    SELECT s.id AS session_id, s.csrf_token, s.expires_at, s.last_seen_at,
            u.id AS user_id, u.username, u.display_name, u.totp_enabled, u.settings_json
     FROM public.sessions s
     JOIN public.users u ON u.id = s.user_id
@@ -732,7 +665,10 @@ async function authenticateRequest(req: Request, url: URL) {
     await sql`DELETE FROM public.sessions WHERE id = ${row.session_id}`;
     return null;
   }
-  await sql`UPDATE public.sessions SET last_seen_at = ${now} WHERE id = ${row.session_id}`;
+  // Aggiorna last_seen_at al massimo 1 volta al giorno per evitare scritture inutili su Postgres
+  if (String(row.last_seen_at || "").slice(0, 10) !== now.slice(0, 10)) {
+    await sql`UPDATE public.sessions SET last_seen_at = ${now} WHERE id = ${row.session_id}`;
+  }
   return row;
 }
 
@@ -824,6 +760,7 @@ Deno.serve(async (req: Request) => {
       const expDate = new Date(Date.now() + 30 * 24 * 3600 * 1000); // 30 giorni per comodità mobile
       const expIso = toRomeIsoFromDate(expDate);
 
+      await sql`DELETE FROM public.sessions WHERE expires_at < ${nowIso}`;
       await sql`
         INSERT INTO public.sessions (token_hash, user_id, csrf_token, created_at, expires_at, last_seen_at, user_agent, ip_address)
         VALUES (
@@ -1181,18 +1118,46 @@ Deno.serve(async (req: Request) => {
         const personId = url.searchParams.get("person_id");
         const rows = personId
           ? await sql`
-              SELECT pkg.*, p.first_name, p.last_name
-              FROM public.packages pkg JOIN public.people p ON p.id = pkg.person_id
+              SELECT pkg.*, p.first_name, p.last_name,
+                     COALESCE(m.consumed, 0)::int AS consumed_sessions
+              FROM public.packages pkg
+              JOIN public.people p ON p.id = pkg.person_id
+              LEFT JOIN (
+                SELECT package_id, COALESCE(SUM(delta_sessions), 0)::int AS consumed
+                FROM public.package_movements
+                GROUP BY package_id
+              ) m ON m.package_id = pkg.id
               WHERE pkg.person_id = ${Number(personId)}
               ORDER BY pkg.purchased_date DESC, pkg.id DESC
             `
           : await sql`
-              SELECT pkg.*, p.first_name, p.last_name
-              FROM public.packages pkg JOIN public.people p ON p.id = pkg.person_id
+              SELECT pkg.*, p.first_name, p.last_name,
+                     COALESCE(m.consumed, 0)::int AS consumed_sessions
+              FROM public.packages pkg
+              JOIN public.people p ON p.id = pkg.person_id
+              LEFT JOIN (
+                SELECT package_id, COALESCE(SUM(delta_sessions), 0)::int AS consumed
+                FROM public.package_movements
+                GROUP BY package_id
+              ) m ON m.package_id = pkg.id
               ORDER BY pkg.purchased_date DESC, pkg.id DESC
             `;
-        const packages = [];
-        for (const r of rows) packages.push(await computePackageSummary(r));
+        const packages = Array.from(rows).map((r) => {
+          const total = Number(r.total_sessions);
+          const consumed = Number(r.consumed_sessions || 0);
+          const remaining = Math.max(0, total - consumed);
+          return {
+            ...r,
+            total_sessions: total,
+            consumed_sessions: consumed,
+            remaining_sessions: remaining,
+            reserved_sessions: 0,
+            available_to_book: remaining,
+            paid_cents: 0,
+            due_cents: 0,
+            payment_status: "saldato",
+          };
+        });
         return jsonResponse(200, { packages });
       }
 
@@ -1233,8 +1198,7 @@ Deno.serve(async (req: Request) => {
 
       if (path === "/api/security/overview") {
         const [user] = await sql`SELECT * FROM public.users WHERE id = ${session.user_id}`;
-        const backupsRows = await sql`SELECT * FROM public.cloud_backups ORDER BY id DESC LIMIT 20`;
-        const recentAudits = Array.from(await sql`SELECT * FROM public.audit_logs ORDER BY id DESC LIMIT 60`);
+        const backupsRows = await sql`SELECT * FROM public.cloud_backups ORDER BY id DESC LIMIT 10`;
         const otpauthUri = `otpauth://totp/GestionaleFisioFitness:${encodeURIComponent(user.username)}?secret=${user.totp_secret}&issuer=GestionaleFisioFitness&algorithm=SHA1&digits=6&period=30`;
         return jsonResponse(200, {
           env_mode: "prod",
@@ -1245,7 +1209,7 @@ Deno.serve(async (req: Request) => {
           otpauth_uri: otpauthUri,
           current_totp_demo_hint: null,
           backups: Array.from(backupsRows).map((b) => JSON.parse(b.meta_json || "{}")),
-          recent_audits: recentAudits,
+          recent_audits: [],
         });
       }
 
@@ -1334,13 +1298,6 @@ Deno.serve(async (req: Request) => {
         ) RETURNING *
       `;
 
-      if (fitnessActive) {
-        await sql`
-          INSERT INTO public.fitness_profiles (person_id, primary_goals, experience_level, version, created_at, updated_at)
-          VALUES (${person.id}, ${payload.fitness_initial_goal || ""}, 'Intermedio', 1, ${now}, ${now})
-          ON CONFLICT (person_id) DO NOTHING
-        `;
-      }
       await logAudit("CREATE_PERSON", "people", person.id, person.id, `Creata anagrafica ${firstName} ${lastName}`, actor);
       return jsonResponse(201, { ...person, potential_duplicates: duplicates });
     }
@@ -1413,13 +1370,6 @@ Deno.serve(async (req: Request) => {
         WHERE id = ${personId}
         RETURNING *
       `;
-      if (fitnessActive && !current.fitness_active) {
-        await sql`
-          INSERT INTO public.fitness_profiles (person_id, primary_goals, experience_level, version, created_at, updated_at)
-          VALUES (${personId}, '', 'Intermedio', 1, ${now}, ${now})
-          ON CONFLICT (person_id) DO NOTHING
-        `;
-      }
       await logAudit("UPDATE_PERSON", "people", personId, personId, `Aggiornata anagrafica v${newVersion}`, actor);
       return jsonResponse(200, updated);
     }
@@ -2688,15 +2638,37 @@ Deno.serve(async (req: Request) => {
       const now = nowRomeIso();
       const ts = now.slice(0, 19).replace(/[-:T]/g, "");
       const backupId = `bkp_cloud_${ts}_${randomHex(3)}`;
-      const people = Array.from(await sql`SELECT * FROM public.people`);
-      const episodes = Array.from(await sql`SELECT * FROM public.physio_episodes`);
-      const evals = Array.from(await sql`SELECT * FROM public.clinical_evaluations`);
-      const packages = Array.from(await sql`SELECT * FROM public.packages`);
-      const appointments = Array.from(await sql`SELECT * FROM public.appointments`);
-      const attachments = Array.from(await sql`SELECT * FROM public.attachments`);
+      const [people, episodes, evals, notes, flags, outcomeMeasures, sharedLimitations, packages, packageMovements, consents, attachments] =
+        await Promise.all([
+          sql`SELECT * FROM public.people`,
+          sql`SELECT * FROM public.physio_episodes`,
+          sql`SELECT * FROM public.clinical_evaluations`,
+          sql`SELECT * FROM public.clinical_notes`,
+          sql`SELECT * FROM public.clinical_flags`,
+          sql`SELECT * FROM public.outcome_measures`,
+          sql`SELECT * FROM public.shared_limitations`,
+          sql`SELECT * FROM public.packages`,
+          sql`SELECT * FROM public.package_movements`,
+          sql`SELECT * FROM public.consents`,
+          sql`SELECT * FROM public.attachments`,
+        ]);
 
       const snapshotBytes = new TextEncoder().encode(
-        JSON.stringify({ backup_id: backupId, created_at: now, people, episodes, evals, packages, appointments, attachments }),
+        JSON.stringify({
+          backup_id: backupId,
+          created_at: now,
+          people: Array.from(people),
+          episodes: Array.from(episodes),
+          evals: Array.from(evals),
+          notes: Array.from(notes),
+          flags: Array.from(flags),
+          outcome_measures: Array.from(outcomeMeasures),
+          shared_limitations: Array.from(sharedLimitations),
+          packages: Array.from(packages),
+          package_movements: Array.from(packageMovements),
+          consents: Array.from(consents),
+          attachments: Array.from(attachments),
+        }),
       );
       const dbSha = await sha256Hex(snapshotBytes);
       const hmacHex = await sha256Hex(`hmac_${backupId}_${dbSha}`);
@@ -2713,7 +2685,7 @@ Deno.serve(async (req: Request) => {
         size_bytes: snapshotBytes.length,
         hmac_sha256: hmacHex,
         database_sha256: dbSha,
-        attachments_count: attachments.length,
+        attachments_count: Array.from(attachments).length,
         cipher: "Supabase Cloud Encrypted Snapshot + SHA-256",
       };
       await sql`
@@ -2722,9 +2694,22 @@ Deno.serve(async (req: Request) => {
           database_sha256, attachments_count, cipher, meta_json
         ) VALUES (
           ${backupId}, ${now}, ${encFilename}, ${snapshotBytes.length}, ${hmacHex},
-          ${dbSha}, ${attachments.length}, ${metaInfo.cipher}, ${JSON.stringify(metaInfo)}
+          ${dbSha}, ${Array.from(attachments).length}, ${metaInfo.cipher}, ${JSON.stringify(metaInfo)}
         )
       `;
+
+      // Auto-retention: conserva solo gli ultimi 3 backup per tenere leggero Storage e DB (piano Free)
+      const oldBackups = Array.from(
+        await sql`SELECT id, encrypted_filename FROM public.cloud_backups ORDER BY id DESC OFFSET 3`,
+      );
+      if (oldBackups.length > 0) {
+        await supabaseAdmin.storage
+          .from("encrypted-backups")
+          .remove(oldBackups.map((b) => b.encrypted_filename));
+        for (const ob of oldBackups) {
+          await sql`DELETE FROM public.cloud_backups WHERE id = ${ob.id}`;
+        }
+      }
       return jsonResponse(201, metaInfo);
     }
 

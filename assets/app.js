@@ -3,14 +3,14 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js?v=9";
+} from "./body_map.js?v=10";
 import {
   PCS_ITEMS,
   TSK13_ITEMS,
   computeScaleBreakdown,
   buildClinicalNoteFromBreakdown,
   parseTallyScalesCsv
-} from "./scales.js?v=9";
+} from "./scales.js?v=10";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
@@ -34,7 +34,10 @@ const state = {
   peopleStatusFilter: "attivo",
   peopleLocalQuery: "",
   peopleCache: [],
-  catalogs: { outcome_scales: {}, templates: [] },
+  peopleCacheKey: "",
+  allPeopleSearchCache: null,
+  dossierCache: new Map(),
+  packagesCache: null,
   bodyMapDraft: {
     viewSide: "anterior",
     markerKind: "point",
@@ -144,6 +147,13 @@ function buildAuthUrl(path) {
   return `${base}${sep}token=${encodeURIComponent(state.sessionToken)}`;
 }
 
+function invalidateDataCaches() {
+  state.peopleCacheKey = "";
+  state.allPeopleSearchCache = null;
+  state.dossierCache.clear();
+  state.packagesCache = null;
+}
+
 async function apiFetch(path, options = {}) {
   const method = (options.method || "GET").toUpperCase();
   const headers = { ...(options.headers || {}) };
@@ -209,8 +219,11 @@ async function apiFetch(path, options = {}) {
     throw err;
   }
 
-  if (method !== "GET" && !options.silentStatus) {
-    setSaveStatus("saved", "Salvato");
+  if (method !== "GET") {
+    invalidateDataCaches();
+    if (!options.silentStatus) {
+      setSaveStatus("saved", "Salvato");
+    }
   }
   return data;
 }
@@ -322,10 +335,17 @@ async function refreshCurrentView() {
 // ============================================================================
 
 async function renderPeopleListView(container) {
-  const data = await apiFetch(
-    `/api/people?area=${encodeURIComponent(state.peopleAreaFilter)}&status=${encodeURIComponent(state.peopleStatusFilter)}`
-  );
-  state.peopleCache = data.people || [];
+  const cacheKey = `${state.peopleAreaFilter}|${state.peopleStatusFilter}`;
+  if (state.peopleCacheKey !== cacheKey) {
+    const data = await apiFetch(
+      `/api/people?area=${encodeURIComponent(state.peopleAreaFilter)}&status=${encodeURIComponent(state.peopleStatusFilter)}`
+    );
+    state.peopleCache = data.people || [];
+    state.peopleCacheKey = cacheKey;
+    if (state.peopleAreaFilter === "tutti" && state.peopleStatusFilter === "attivo") {
+      state.allPeopleSearchCache = state.peopleCache;
+    }
+  }
 
   const areaButtons = [
     { id: "tutti", label: "Tutti" },
@@ -476,7 +496,11 @@ async function renderPeopleListView(container) {
 // ============================================================================
 
 async function renderPersonDossierView(container, personId) {
-  const dossier = await apiFetch(`/api/people/${personId}`);
+  let dossier = state.dossierCache.get(personId);
+  if (!dossier) {
+    dossier = await apiFetch(`/api/people/${personId}`);
+    state.dossierCache.set(personId, dossier);
+  }
   const p = dossier.person;
   const activePackages = (dossier.packages || []).filter((k) => k.status === "attivo");
   const totalRemSessions = activePackages.reduce((acc, k) => acc + Number(k.remaining_sessions || 0), 0);
@@ -1628,8 +1652,12 @@ function renderPersonTabDocumenti(viewport, dossier) {
 // ============================================================================
 
 async function renderPackagesView(container) {
-  const data = await apiFetch("/api/packages");
-  const packages = data.packages || [];
+  let packages = state.packagesCache;
+  if (!packages) {
+    const data = await apiFetch("/api/packages");
+    packages = data.packages || [];
+    state.packagesCache = packages;
+  }
 
   const activePkgs = packages.filter((k) => k.status === "attivo");
   const remainingTotal = activePkgs.reduce((a, k) => a + Number(k.remaining_sessions || 0), 0);
@@ -2346,8 +2374,12 @@ function showNewPersonModal() {
 }
 
 async function showNewPackageModal(preselectedPersonId = null) {
-  const pData = await apiFetch("/api/people?status=attivo");
-  const people = pData.people || [];
+  let people = state.allPeopleSearchCache;
+  if (!people) {
+    const pData = await apiFetch("/api/people?status=attivo");
+    people = pData.people || [];
+    state.allPeopleSearchCache = people;
+  }
   const selectedPid = preselectedPersonId || state.selectedPersonId || people[0]?.id;
 
   openModal(`
@@ -2992,7 +3024,7 @@ function showUploadAttachmentModal(personId) {
     <h2 class="modal-title">Carica allegato</h2>
     <form id="uploadAttForm">
       <div class="form-group">
-        <label class="form-label">File (PDF, PNG, JPG, WEBP max 15 MB) *</label>
+        <label class="form-label">File (PDF, PNG, JPG, WEBP max 5 MB) *</label>
         <input class="form-control" type="file" id="attFileInput" accept=".pdf,image/png,image/jpeg,image/webp" required />
       </div>
       <div class="form-group">
@@ -3016,6 +3048,10 @@ function showUploadAttachmentModal(personId) {
     e.preventDefault();
     const file = document.getElementById("attFileInput")?.files?.[0];
     if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      alert("File troppo grande (max 5 MB per mantenere leggero lo spazio cloud).");
+      return;
+    }
     const fd = new FormData(e.target);
     const reader = new FileReader();
     reader.onload = async () => {
@@ -3081,7 +3117,6 @@ async function initApp() {
       document.getElementById("loginScreen").style.display = "none";
       document.getElementById("appShell").style.display = "flex";
       setSaveStatus("saved", "Sincronizzato");
-      state.catalogs = await apiFetch("/api/catalogs", { silentStatus: true });
       await navigateTo("people", { personId: null });
     } catch (err) {
       if (err.data?.require_totp) {
@@ -3107,6 +3142,7 @@ async function initApp() {
     state.authenticated = false;
     state.csrfToken = "";
     state.sessionToken = "";
+    invalidateDataCaches();
     try {
       localStorage.removeItem("gestionale_cloud_token");
     } catch {}
@@ -3118,13 +3154,22 @@ async function initApp() {
   const searchInput = document.getElementById("globalSearchInput");
   const searchDrop = document.getElementById("globalSearchDropdown");
   searchInput?.addEventListener("input", async (e) => {
-    const q = e.target.value.trim();
+    const q = e.target.value.trim().toLowerCase();
     if (!q) {
       searchDrop.style.display = "none";
       return;
     }
-    const res = await apiFetch(`/api/people?q=${encodeURIComponent(q)}&status=tutti`);
-    const list = res.people || [];
+    // Ricerca locale in memoria (0 chiamate Supabase mentre scrivi)
+    let source = state.allPeopleSearchCache || (state.peopleCache.length ? state.peopleCache : null);
+    if (!source) {
+      const res = await apiFetch(`/api/people?status=tutti`);
+      source = res.people || [];
+      state.allPeopleSearchCache = source;
+    }
+    const list = source.filter((p) => {
+      const hay = `${p.first_name} ${p.last_name} ${p.last_name} ${p.first_name} ${p.current_pain_notes || ""} ${p.sport_activity || ""} ${p.phone || ""} ${p.email || ""}`.toLowerCase();
+      return hay.includes(q);
+    });
     if (!list.length) {
       searchDrop.innerHTML = `<div class="search-result-item" style="color:var(--text-muted);">Nessun risultato</div>`;
     } else {
@@ -3171,7 +3216,6 @@ async function initApp() {
       document.getElementById("loginScreen").style.display = "none";
       document.getElementById("appShell").style.display = "flex";
       setSaveStatus("saved", "Sincronizzato");
-      state.catalogs = await apiFetch("/api/catalogs", { silentStatus: true });
       await navigateTo("people", { personId: null });
     } else {
       showLoginScreen();
