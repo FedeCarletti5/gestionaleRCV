@@ -1429,19 +1429,36 @@ details.anam-bar > .anam-bar-body {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: hidden;
-  background: #fbfcfd;
+  background: #ffffff;
+  max-width: 860px;
+  margin: 0 auto;
 }
 .body-chart-svg {
   width: 100%;
   height: auto;
-  max-height: 540px;
+  aspect-ratio: 1000 / 671;
   display: block;
   cursor: crosshair;
   touch-action: none;
   user-select: none;
 }
 
-/* Yellow Flags Group Header */
+/* Red & Yellow Flags Group Headers */
+.rf-card-title {
+  color: #991b1b;
+}
+.yf-card-title {
+  color: #92400e;
+}
+.rf-group-header {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+}
 .yf-group-header {
   background: #fef3c7;
   color: #92400e;

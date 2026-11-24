@@ -202,9 +202,13 @@ function strokeToSvgPath(points) {
   return d;
 }
 
+const BODY_VB_W = 1000;
+const BODY_VB_H = 671;
+
 /**
- * Silhouette anatomica pulita a tratto medico (Anteriore, Laterale DX, Laterale SX, Posteriore, Dorso e Pianta piedi)
- * ViewBox normalizzato 0 0 1000 680.
+ * Body Chart anatomica clinica ad alta precisione (6 viste: Anteriore, Laterale DX,
+ * Laterale SX, Posteriore, Dorso e Pianta piedi) con livello vettoriale per il disegno a mano libera.
+ * L'immagine di base è un asset statico (0 byte su Supabase); nel DB salviamo solo i tratti vettoriali.
  */
 function renderBodyChartSvg(strokes = []) {
   const strokePaths = (strokes || [])
@@ -223,158 +227,34 @@ function renderBodyChartSvg(strokes = []) {
     .join("");
 
   return `
-    <svg id="freehandBodySvg" class="body-chart-svg" viewBox="0 0 1000 680" role="img" aria-label="Body chart anatomica interattiva">
-      <rect x="0" y="0" width="1000" height="680" fill="#fbfcfd" />
+    <svg id="freehandBodySvg" class="body-chart-svg" viewBox="0 0 ${BODY_VB_W} ${BODY_VB_H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Body chart anatomica interattiva">
+      <rect x="0" y="0" width="${BODY_VB_W}" height="${BODY_VB_H}" fill="#ffffff" />
+      <image
+        href="./assets/body_chart.png?v=12"
+        x="0"
+        y="0"
+        width="${BODY_VB_W}"
+        height="${BODY_VB_H}"
+        preserveAspectRatio="xMidYMid meet"
+        style="pointer-events:none; user-select:none;"
+      />
 
-      <!-- Etichette discrete -->
-      <g fill="#9ca3af" font-size="13" font-weight="600" text-anchor="middle" style="user-select:none; pointer-events:none;">
-        <text x="275" y="28">ANTERIORE</text>
-        <text x="175" y="48">DX</text>
-        <text x="375" y="48">SX</text>
-        <text x="510" y="24">LATO DX</text>
-        <text x="510" y="366">LATO SX</text>
-        <text x="745" y="28">POSTERIORE</text>
-        <text x="645" y="48">SX</text>
-        <text x="845" y="48">DX</text>
-        <text x="90" y="510">DORSO PIEDI</text>
-        <text x="910" y="510">PIANTA PIEDI</text>
-      </g>
-
-      <!-- Figure anatomiche line-art (non intercettano pointer) -->
-      <g fill="#ffffff" stroke="#1f2937" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;">
-        <!-- 1. ANTERIORE (centro x=275) -->
-        <g id="fig-anterior">
-          <!-- Testa e collo -->
-          <path d="M 275 58 C 254 58, 245 76, 247 98 C 248 115, 259 128, 275 128 C 291 128, 302 115, 303 98 C 305 76, 296 58, 275 58 Z" />
-          <!-- Orecchie -->
-          <path d="M 247 90 C 242 90, 242 106, 248 106" fill="none" />
-          <path d="M 303 90 C 308 90, 308 106, 302 106" fill="none" />
-          <!-- Corpo completo anteriore -->
-          <path d="
-            M 260 124 L 258 144 C 242 152, 212 156, 202 174
-            C 194 190, 190 232, 184 268
-            C 178 302, 166 336, 156 364
-            L 140 388 C 137 394, 144 398, 149 392 L 158 380
-            L 150 410 C 149 415, 155 417, 158 411 L 166 386
-            L 164 414 C 164 419, 170 419, 172 413 L 177 386
-            L 179 406 C 180 411, 186 410, 186 404 L 185 376
-            C 194 348, 206 312, 212 276
-            C 216 250, 219 224, 222 214
-            C 226 244, 228 278, 226 308
-            C 222 332, 216 356, 216 388
-            C 216 426, 226 472, 232 508
-            C 236 534, 232 568, 238 606
-            L 236 628 C 228 638, 220 644, 222 650 C 226 655, 254 654, 260 648
-            C 262 642, 258 630, 258 614
-            C 263 576, 268 540, 267 506
-            C 269 472, 272 426, 275 384
-            C 278 426, 281 472, 283 506
-            C 282 540, 287 576, 292 614
-            C 292 630, 288 642, 290 648
-            C 296 654, 324 655, 328 650 C 330 644, 322 638, 314 628
-            L 312 606 C 318 568, 314 534, 318 508
-            C 324 472, 334 426, 334 388
-            C 334 356, 328 332, 324 308
-            C 322 278, 324 244, 328 214
-            C 331 224, 334 250, 338 276
-            C 344 312, 356 348, 365 376
-            L 364 404 C 364 410, 370 411, 371 406 L 373 386
-            L 378 413 C 380 419, 386 419, 386 414 L 384 386
-            L 392 411 C 395 417, 401 415, 400 410 L 392 380
-            L 401 392 C 406 398, 413 394, 410 388 L 394 364
-            C 384 336, 372 302, 366 268
-            C 360 232, 356 190, 348 174
-            C 338 156, 308 152, 292 144 L 290 124
-          " />
-          <!-- Dettagli anatomici anteriori leggeri -->
-          <g fill="none" stroke="#94a3b8" stroke-width="1.3">
-            <path d="M 232 168 Q 254 176 275 170 Q 296 176 318 168" />
-            <path d="M 230 220 Q 252 228 272 220 M 278 220 Q 298 228 320 220" />
-            <circle cx="275" cy="306" r="2.2" />
-            <path d="M 238 492 Q 248 502 258 492 M 292 492 Q 302 502 312 492" />
-            <path d="M 263 360 Q 275 374 287 360" />
-          </g>
-        </g>
-
-        <!-- 2. LATERALE DX (in alto centro, rivolto a destra, x=510, y=38..336) -->
-        <g id="fig-lat-dx">
-          <path d="M 505 42 C 520 42, 526 52, 526 62 L 530 68 L 525 72 L 526 78 C 526 84, 518 88, 512 88 L 512 96 C 524 102, 530 116, 530 138 C 530 158, 524 172, 524 190 C 524 206, 528 224, 524 246 C 520 264, 516 284, 516 306 L 516 322 L 536 330 C 538 334, 532 336, 518 336 L 498 336 C 494 336, 494 328, 498 322 L 498 298 C 494 276, 492 258, 496 238 C 492 216, 488 198, 492 178 C 488 158, 492 132, 492 112 C 492 102, 496 96, 498 88 C 492 84, 490 74, 490 62 C 490 48, 496 42, 505 42 Z" />
-          <!-- Braccio laterale DX -->
-          <path d="M 508 110 C 516 112, 520 132, 518 158 C 518 178, 522 198, 520 218 L 512 222 C 508 202, 506 180, 504 156 C 502 134, 502 114, 508 110 Z" fill="#ffffff" />
-        </g>
-
-        <!-- 3. LATERALE SX (in basso centro, rivolto a sinistra, x=510, y=380..666) -->
-        <g id="fig-lat-sx">
-          <path d="M 515 380 C 500 380, 494 390, 494 400 L 490 406 L 495 410 L 494 416 C 494 422, 502 426, 508 426 L 508 434 C 496 440, 490 454, 490 476 C 490 496, 496 510, 496 528 C 496 544, 492 562, 496 584 C 500 602, 504 622, 504 644 L 504 654 L 484 662 C 482 666, 488 668, 502 668 L 522 668 C 526 668, 526 660, 522 654 L 522 634 C 526 614, 528 596, 524 576 C 528 554, 532 536, 528 516 C 532 496, 528 470, 528 450 C 528 440, 524 434, 522 426 C 528 422, 530 412, 530 400 C 530 386, 524 380, 515 380 Z" />
-          <!-- Braccio laterale SX -->
-          <path d="M 512 448 C 504 450, 500 470, 502 496 C 502 516, 498 536, 500 556 L 508 560 C 512 540, 514 518, 516 494 C 518 472, 518 452, 512 448 Z" fill="#ffffff" />
-        </g>
-
-        <!-- 4. POSTERIORE (centro x=745) -->
-        <g id="fig-posterior">
-          <path d="M 745 58 C 724 58, 715 76, 717 98 C 718 115, 729 126, 745 126 C 761 126, 772 115, 773 98 C 775 76, 766 58, 745 58 Z" />
-          <path d="M 717 90 C 712 90, 712 106, 718 106" fill="none" />
-          <path d="M 773 90 C 778 90, 778 106, 772 106" fill="none" />
-          <path d="
-            M 730 122 L 728 144 C 712 152, 682 156, 672 174
-            C 664 190, 660 232, 654 268
-            C 648 302, 636 336, 626 364
-            L 610 388 C 607 394, 614 398, 619 392 L 628 380
-            L 620 410 C 619 415, 625 417, 628 411 L 636 386
-            L 634 414 C 634 419, 640 419, 642 413 L 647 386
-            L 649 406 C 650 411, 656 410, 656 404 L 655 376
-            C 664 348, 676 312, 682 276
-            C 686 250, 689 224, 692 214
-            C 696 244, 698 278, 696 308
-            C 692 332, 686 356, 686 388
-            C 686 426, 696 472, 702 508
-            C 706 534, 702 568, 708 606
-            L 706 628 C 700 638, 696 646, 702 652 C 708 656, 728 654, 732 648
-            C 734 640, 728 628, 728 614
-            C 733 576, 738 540, 737 506
-            C 739 472, 742 426, 745 388
-            C 748 426, 751 472, 753 506
-            C 752 540, 757 576, 762 614
-            C 762 628, 756 640, 758 648
-            C 762 654, 782 656, 788 652 C 794 646, 790 638, 784 628
-            L 782 606 C 788 568, 784 534, 788 508
-            C 794 472, 804 426, 804 388
-            C 804 356, 798 332, 794 308
-            C 792 278, 794 244, 798 214
-            C 801 224, 804 250, 808 276
-            C 814 312, 826 348, 835 376
-            L 834 404 C 834 410, 840 411, 841 406 L 843 386
-            L 848 413 C 850 419, 856 419, 856 414 L 854 386
-            L 862 411 C 865 417, 871 415, 870 410 L 862 380
-            L 871 392 C 876 398, 883 394, 880 388 L 864 364
-            C 854 336, 842 302, 836 268
-            C 830 232, 826 190, 818 174
-            C 808 156, 778 152, 762 144 L 760 122
-          " />
-          <!-- Dettagli anatomici posteriori leggeri (colonna, scapole, glutei, cavi poplitei) -->
-          <g fill="none" stroke="#94a3b8" stroke-width="1.3">
-            <line x1="745" y1="148" x2="745" y2="342" stroke-dasharray="4 4" />
-            <path d="M 716 190 C 722 214, 728 232, 734 242 M 774 190 C 768 214, 762 232, 756 242" />
-            <path d="M 745 342 L 745 384 M 694 386 Q 718 398 745 384 Q 772 398 796 386" />
-            <path d="M 704 504 Q 718 510 732 504 M 758 504 Q 772 510 786 504" />
-          </g>
-        </g>
-
-        <!-- 5. DORSO PIEDI (in basso a sinistra) -->
-        <g id="fig-feet-dorsal">
-          <path d="M 52 528 L 52 586 C 46 606, 40 628, 44 646 C 48 656, 72 658, 76 644 C 79 628, 75 604, 72 586 L 72 528" />
-          <path d="M 106 528 L 106 586 C 103 604, 99 628, 102 644 C 106 658, 130 656, 134 646 C 138 628, 132 606, 126 586 L 126 528" />
-        </g>
-
-        <!-- 6. PIANTA PIEDI (in basso a destra) -->
-        <g id="fig-feet-plantar">
-          <path d="M 874 654 C 860 654, 856 632, 860 606 C 862 590, 854 570, 856 552 C 858 536, 882 536, 890 554 C 896 570, 890 594, 888 614 C 888 636, 888 654, 874 654 Z" />
-          <path d="M 944 654 C 958 654, 962 632, 958 606 C 956 590, 964 570, 962 552 C 960 536, 936 536, 928 554 C 922 570, 928 594, 930 614 C 930 636, 930 654, 944 654 Z" />
-        </g>
+      <!-- Etichette anatomiche discrete -->
+      <g fill="#6b7280" font-size="11.5" font-weight="600" letter-spacing="0.04em" text-anchor="middle" style="user-select:none; pointer-events:none;">
+        <text x="84" y="34">DX</text>
+        <text x="262" y="34">SX</text>
+        <text x="748" y="34">SX</text>
+        <text x="918" y="34">DX</text>
+        <text x="500" y="334">LATO DX</text>
+        <text x="65" y="656">DORSO</text>
+        <text x="173" y="656">ANTERIORE</text>
+        <text x="500" y="656">LATO SX</text>
+        <text x="833" y="656">POSTERIORE</text>
+        <text x="936" y="656">PIANTA</text>
       </g>
 
       <!-- Tratti disegnati a mano libera -->
-      <g id="freehandStrokesLayer">${strokePaths}</g>
+      <g id="freehandStrokesLayer" style="pointer-events:none;">${strokePaths}</g>
     </svg>
   `;
 }
@@ -657,18 +537,16 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
       <!-- 6. RED FLAGS -->
       <section id="sec-redflags" class="card">
         <div class="card-header">
-          <div>
-            <h3 class="card-title">Red Flags</h3>
-            <div class="card-subtitle">Notato di recente</div>
-          </div>
+          <h3 class="card-title rf-card-title">Red Flags</h3>
           <span class="tag ${redSet.size ? "tag-danger" : ""} num" id="redCountBadge">${redSet.size} presenti</span>
         </div>
-        <div class="anam-3col">
+        <div class="rf-group-header">Notato di recente</div>
+        <div class="anam-3col" style="padding:8px 4px 0;">
           ${RED_FLAGS_COLS.map(
             (col) => `<div class="anam-toggle-col">${col.map((rf) => toggleSwitchHtml("red_flag", rf, rf, redSet.has(rf), "anam-toggle-danger")).join("")}</div>`
           ).join("")}
         </div>
-        <div class="form-group" style="margin:12px 0 0;">
+        <div class="form-group" style="margin:14px 0 0;">
           <input class="form-control form-control-sm" name="red_flags_note" value="${esc(redFlags.note || "")}" placeholder="Note Red Flags / eventuale referral..." />
         </div>
       </section>
@@ -676,7 +554,7 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
       <!-- 7. YELLOW FLAGS -->
       <section id="sec-yellowflags" class="card">
         <div class="card-header">
-          <h3 class="card-title">Yellow Flags</h3>
+          <h3 class="card-title yf-card-title">Yellow Flags</h3>
           <span class="tag ${yellowSet.size ? "tag-warning" : ""} num" id="yellowCountBadge">${yellowSet.size} presenti</span>
         </div>
         <div class="grid-2" style="align-items:start;">
@@ -764,10 +642,24 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
   let activePathEl = null;
 
   const clientToSvg = (evt) => {
+    const ctm = svgEl?.getScreenCTM?.();
+    if (ctm) {
+      const pt = svgEl.createSVGPoint();
+      pt.x = evt.clientX;
+      pt.y = evt.clientY;
+      const svgPt = pt.matrixTransform(ctm.inverse());
+      return [
+        Math.round(Math.max(0, Math.min(BODY_VB_W, svgPt.x)) * 10) / 10,
+        Math.round(Math.max(0, Math.min(BODY_VB_H, svgPt.y)) * 10) / 10
+      ];
+    }
     const rect = svgEl.getBoundingClientRect();
-    const x = Math.round(((evt.clientX - rect.left) / rect.width) * 1000);
-    const y = Math.round(((evt.clientY - rect.top) / rect.height) * 680);
-    return [Math.max(0, Math.min(1000, x)), Math.max(0, Math.min(680, y))];
+    const x = ((evt.clientX - rect.left) / rect.width) * BODY_VB_W;
+    const y = ((evt.clientY - rect.top) / rect.height) * BODY_VB_H;
+    return [
+      Math.round(Math.max(0, Math.min(BODY_VB_W, x)) * 10) / 10,
+      Math.round(Math.max(0, Math.min(BODY_VB_H, y)) * 10) / 10
+    ];
   };
 
   const redrawStrokes = () => {
@@ -813,7 +705,7 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
     const pt = clientToSvg(evt);
     const last = activeStroke.points[activeStroke.points.length - 1];
     const distSq = (pt[0] - last[0]) ** 2 + (pt[1] - last[1]) ** 2;
-    if (distSq >= 16) {
+    if (distSq >= 6) {
       activeStroke.points.push(pt);
       activePathEl.setAttribute("d", strokeToSvgPath(activeStroke.points));
     }

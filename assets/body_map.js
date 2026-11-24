@@ -245,10 +245,22 @@ export function renderBodySvgMarkup(viewSide, markers, comparisonMarkers = [], z
 }
 
 export function clientEventToNormalizedSvgCoords(svgElement, event) {
-  const rect = svgElement.getBoundingClientRect();
   const clientX = event.touches && event.touches[0] ? event.touches[0].clientX : event.clientX;
   const clientY = event.touches && event.touches[0] ? event.touches[0].clientY : event.clientY;
 
+  const ctm = svgElement?.getScreenCTM?.();
+  if (ctm) {
+    const pt = svgElement.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    const svgPt = pt.matrixTransform(ctm.inverse());
+    return {
+      x_norm: Math.round(Math.max(0, Math.min(1000, svgPt.x)) * 10) / 10,
+      y_norm: Math.round(Math.max(0, Math.min(1000, svgPt.y)) * 10) / 10
+    };
+  }
+
+  const rect = svgElement.getBoundingClientRect();
   const vbAttr = (svgElement.getAttribute("viewBox") || "0 0 1000 1000").split(/\s+/).map(Number);
   const [vbX, vbY, vbW, vbH] = vbAttr;
 
