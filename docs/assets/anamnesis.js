@@ -204,13 +204,70 @@ function strokeToSvgPath(points) {
 
 const BODY_VB_W = 1000;
 const BODY_VB_H = 671;
+const HAS_FEMALE_BODY_CHART = false;
+
+function isFemaleGender(gender) {
+  const g = String(gender || "").trim().toLowerCase();
+  return g === "donna" || g === "f" || g === "femmina" || g === "female";
+}
+
+function severityColorForValue(rawVal) {
+  const v = Math.max(0, Math.min(10, Number(rawVal) || 0));
+  if (v <= 0.05) {
+    return { color: "#64748b", bg: "#ffffff", border: "#d1d5db" };
+  }
+  const t = Math.max(0, Math.min(1, v / 10));
+  const hue = Math.round(138 * (1 - t));
+  const sat = Math.round(70 + 12 * t);
+  const light = Math.round(40 + 6 * Math.sin(Math.PI * t));
+  return {
+    color: `hsl(${hue}, ${sat}%, ${light}%)`,
+    bg: `hsl(${hue}, ${sat}%, 96%)`,
+    border: `hsl(${hue}, ${Math.round(sat * 0.85)}%, 78%)`
+  };
+}
+
+function applySeveritySliderVisual(slider, badgeEl) {
+  if (!slider) return;
+  const raw = Math.max(0, Math.min(10, Number(slider.value || 0)));
+  const max = Number(slider.max || 10);
+  const pct = Math.max(0, Math.min(100, (raw / max) * 100));
+  const rounded = Math.round(raw);
+  const { color, bg, border } = severityColorForValue(raw);
+  slider.style.background =
+    `linear-gradient(to right, transparent 0%, transparent ${pct}%, #e2e8f0 ${pct}%, #e2e8f0 100%), ` +
+    `linear-gradient(to right, #22c55e 0%, #84cc16 28%, #eab308 52%, #f97316 76%, #dc2626 100%)`;
+  slider.style.setProperty("--thumb-color", color);
+  if (badgeEl) {
+    badgeEl.textContent = String(rounded);
+    badgeEl.style.color = rounded > 0 ? color : "var(--text)";
+    badgeEl.style.backgroundColor = rounded > 0 ? bg : "var(--bg-surface)";
+    badgeEl.style.borderColor = rounded > 0 ? border : "var(--border-strong)";
+  }
+}
+
+function applyBrushSliderVisual(slider, color) {
+  if (!slider) return;
+  const min = Number(slider.min || 3);
+  const max = Number(slider.max || 24);
+  const val = Number(slider.value || 10);
+  const pct = Math.max(0, Math.min(100, ((val - min) / (max - min)) * 100));
+  const activeColor = color || "#1e4976";
+  slider.style.background = `linear-gradient(to right, ${activeColor} 0%, ${activeColor} ${pct}%, #e2e8f0 ${pct}%, #e2e8f0 100%)`;
+  slider.style.setProperty("--thumb-color", activeColor);
+}
 
 /**
  * Body Chart anatomica clinica ad alta precisione (6 viste: Anteriore, Laterale DX,
  * Laterale SX, Posteriore, Dorso e Pianta piedi) con livello vettoriale per il disegno a mano libera.
  * L'immagine di base è un asset statico (0 byte su Supabase); nel DB salviamo solo i tratti vettoriali.
  */
-function renderBodyChartSvg(strokes = []) {
+function renderBodyChartSvg(strokes = [], variant = "male") {
+  const imgHref =
+    variant === "female" && HAS_FEMALE_BODY_CHART
+      ? "./assets/body_chart_female.png?v=13"
+      : "./assets/body_chart.png?v=13";
+
   const strokePaths = (strokes || [])
     .map(
       (st) => `
@@ -230,7 +287,8 @@ function renderBodyChartSvg(strokes = []) {
     <svg id="freehandBodySvg" class="body-chart-svg" viewBox="0 0 ${BODY_VB_W} ${BODY_VB_H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Body chart anatomica interattiva">
       <rect x="0" y="0" width="${BODY_VB_W}" height="${BODY_VB_H}" fill="#ffffff" />
       <image
-        href="./assets/body_chart.png?v=12"
+        id="bodyChartBgImg"
+        href="${imgHref}"
         x="0"
         y="0"
         width="${BODY_VB_W}"
@@ -287,6 +345,7 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
   };
   const infoAgg = epIntake.info_aggiuntive || {};
   const strokes = Array.isArray(epIntake.body_chart?.strokes) ? JSON.parse(JSON.stringify(epIntake.body_chart.strokes)) : [];
+  let bodyChartVariant = epIntake.body_chart?.variant || (isFemaleGender(p.gender) ? "female" : "male");
   const redFlags = epIntake.red_flags || { selected: [], note: "" };
   const yellowFlags = epIntake.yellow_flags || { selected: [], note: "" };
 
@@ -364,16 +423,16 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
             <div class="slider-row">
               <div class="slider-meta">
                 <span class="slider-label">NPRS ATTUALE</span>
-                <span class="slider-val num" id="valNprsAttuale">${Number(motivo.nprs_attuale || 0)}</span>
+                <span class="slider-val num" id="valNprsAttuale">${Math.round(Number(motivo.nprs_attuale || 0))}</span>
               </div>
-              <input type="range" class="clean-slider" min="0" max="10" step="1" name="nprs_attuale" id="sliderNprsAttuale" value="${Number(motivo.nprs_attuale || 0)}" />
+              <input type="range" class="clean-slider" min="0" max="10" step="0.05" name="nprs_attuale" id="sliderNprsAttuale" value="${Math.round(Number(motivo.nprs_attuale || 0))}" />
             </div>
             <div class="slider-row">
               <div class="slider-meta">
                 <span class="slider-label">NPRS PEGGIORE</span>
-                <span class="slider-val num" id="valNprsPeggiore">${Number(motivo.nprs_peggiore || 0)}</span>
+                <span class="slider-val num" id="valNprsPeggiore">${Math.round(Number(motivo.nprs_peggiore || 0))}</span>
               </div>
-              <input type="range" class="clean-slider" min="0" max="10" step="1" name="nprs_peggiore" id="sliderNprsPeggiore" value="${Number(motivo.nprs_peggiore || 0)}" />
+              <input type="range" class="clean-slider" min="0" max="10" step="0.05" name="nprs_peggiore" id="sliderNprsPeggiore" value="${Math.round(Number(motivo.nprs_peggiore || 0))}" />
             </div>
           </div>
         </div>
@@ -412,16 +471,16 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
                 <div class="slider-row">
                   <div class="slider-meta">
                     <span class="slider-label">NPRS</span>
-                    <span class="slider-val num" id="valDoloreNprs">${Number(dolore.nprs || 0)}</span>
+                    <span class="slider-val num" id="valDoloreNprs">${Math.round(Number(dolore.nprs || 0))}</span>
                   </div>
-                  <input type="range" class="clean-slider" min="0" max="10" step="1" name="dolore_nprs" id="sliderDoloreNprs" value="${Number(dolore.nprs || 0)}" />
+                  <input type="range" class="clean-slider" min="0" max="10" step="0.05" name="dolore_nprs" id="sliderDoloreNprs" value="${Math.round(Number(dolore.nprs || 0))}" />
                 </div>
                 <div class="slider-row">
                   <div class="slider-meta">
                     <span class="slider-label">Situazione insostenibile</span>
-                    <span class="slider-val num" id="valInsostenibile">${Number(dolore.situazione_insostenibile || 0)}</span>
+                    <span class="slider-val num" id="valInsostenibile">${Math.round(Number(dolore.situazione_insostenibile || 0))}</span>
                   </div>
-                  <input type="range" class="clean-slider" min="0" max="10" step="1" name="situazione_insostenibile" id="sliderInsostenibile" value="${Number(dolore.situazione_insostenibile || 0)}" />
+                  <input type="range" class="clean-slider" min="0" max="10" step="0.05" name="situazione_insostenibile" id="sliderInsostenibile" value="${Math.round(Number(dolore.situazione_insostenibile || 0))}" />
                 </div>
                 <div class="form-group" style="margin:0;">
                   <label class="form-label">Note dolore</label>
@@ -489,7 +548,7 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
           </div>
         </div>
         <div class="body-chart-wrap" id="bodyChartWrap">
-          ${renderBodyChartSvg(strokes)}
+          ${renderBodyChartSvg(strokes, bodyChartVariant)}
         </div>
       </section>
 
@@ -623,17 +682,36 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
     setEl("yellowCountBadge", `${yfCnt} presenti`, `tag ${yfCnt ? "tag-warning" : ""} num`);
   });
 
-  const bindSlider = (sliderId, valId) => {
+  const bindSeveritySlider = (sliderId, valId) => {
     const sl = document.getElementById(sliderId);
     const vl = document.getElementById(valId);
-    sl?.addEventListener("input", () => {
-      if (vl) vl.textContent = sl.value;
+    if (!sl) return;
+    applySeveritySliderVisual(sl, vl);
+    sl.addEventListener("input", () => {
+      applySeveritySliderVisual(sl, vl);
+    });
+    sl.addEventListener("change", () => {
+      sl.value = String(Math.round(Number(sl.value || 0)));
+      applySeveritySliderVisual(sl, vl);
+    });
+    sl.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowRight" || e.key === "ArrowUp") {
+        e.preventDefault();
+        sl.value = String(Math.min(10, Math.round(Number(sl.value || 0)) + 1));
+        applySeveritySliderVisual(sl, vl);
+        markDirty();
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowDown") {
+        e.preventDefault();
+        sl.value = String(Math.max(0, Math.round(Number(sl.value || 0)) - 1));
+        applySeveritySliderVisual(sl, vl);
+        markDirty();
+      }
     });
   };
-  bindSlider("sliderNprsAttuale", "valNprsAttuale");
-  bindSlider("sliderNprsPeggiore", "valNprsPeggiore");
-  bindSlider("sliderDoloreNprs", "valDoloreNprs");
-  bindSlider("sliderInsostenibile", "valInsostenibile");
+  bindSeveritySlider("sliderNprsAttuale", "valNprsAttuale");
+  bindSeveritySlider("sliderNprsPeggiore", "valNprsPeggiore");
+  bindSeveritySlider("sliderDoloreNprs", "valDoloreNprs");
+  bindSeveritySlider("sliderInsostenibile", "valInsostenibile");
 
   // --- Body Chart Freehand Drawing (Mouse / Touch / Apple Pencil) ---
   const svgEl = document.getElementById("freehandBodySvg");
@@ -723,18 +801,22 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
     if (svgEl) svgEl.style.cursor = drawEnabled ? "crosshair" : "default";
   });
 
+  const widthSlider = document.getElementById("bcWidthSlider");
+  const widthVal = document.getElementById("bcWidthVal");
+  applyBrushSliderVisual(widthSlider, brushColor);
+
   viewport.querySelectorAll("[data-ink-color]").forEach((dot) => {
     dot.addEventListener("click", () => {
       brushColor = dot.getAttribute("data-ink-color");
       viewport.querySelectorAll("[data-ink-color]").forEach((d) => d.classList.toggle("active", d === dot));
+      applyBrushSliderVisual(widthSlider, brushColor);
     });
   });
 
-  const widthSlider = document.getElementById("bcWidthSlider");
-  const widthVal = document.getElementById("bcWidthVal");
   widthSlider?.addEventListener("input", () => {
     brushWidth = Number(widthSlider.value || 10);
     if (widthVal) widthVal.textContent = String(brushWidth);
+    applyBrushSliderVisual(widthSlider, brushColor);
   });
 
   document.getElementById("bcUndoBtn")?.addEventListener("click", () => {
@@ -781,19 +863,19 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
           episodio_tipo: String(fd.get("episodio_tipo") || "primo"),
           note: String(fd.get("motivo_note") || "").trim(),
           problema_associato: String(fd.get("problema_associato") || "").trim(),
-          nprs_attuale: Number(fd.get("nprs_attuale") || 0),
-          nprs_peggiore: Number(fd.get("nprs_peggiore") || 0),
+          nprs_attuale: Math.round(Number(fd.get("nprs_attuale") || 0)),
+          nprs_peggiore: Math.round(Number(fd.get("nprs_peggiore") || 0)),
           fattori_provocativi: String(fd.get("fattori_provocativi") || "").trim(),
           fattori_allevianti: String(fd.get("fattori_allevianti") || "").trim()
         },
         dolore: {
           qualita: getAll("pain_quality"),
-          nprs: Number(fd.get("dolore_nprs") || 0),
-          situazione_insostenibile: Number(fd.get("situazione_insostenibile") || 0),
+          nprs: Math.round(Number(fd.get("dolore_nprs") || 0)),
+          situazione_insostenibile: Math.round(Number(fd.get("situazione_insostenibile") || 0)),
           note: String(fd.get("dolore_note") || "").trim()
         },
         info_aggiuntive,
-        body_chart: { strokes },
+        body_chart: { strokes, variant: bodyChartVariant },
         red_flags: {
           selected: getAll("red_flag"),
           note: String(fd.get("red_flags_note") || "").trim()
