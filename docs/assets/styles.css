@@ -1237,6 +1237,30 @@ textarea.form-control {
   color: var(--text-muted);
 }
 
+/* Griglia azioni allineata al pixel nella tabella Pacchetti */
+.pkg-rem-pill {
+  min-width: 68px;
+  justify-content: center;
+  text-align: center;
+}
+.pkg-actions-grid {
+  display: inline-grid;
+  grid-template-columns: 92px 38px 78px 60px;
+  gap: 6px;
+  align-items: center;
+  justify-content: end;
+}
+.pkg-actions-grid .btn {
+  width: 100%;
+  height: 28px;
+  justify-content: center;
+  padding: 0 6px;
+}
+.pkg-actions-grid .btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 /* ==========================================================================
    Raccolta Anamnestica Strutturata (Toggle, Slider, Body Chart, Accordion)
    ========================================================================== */

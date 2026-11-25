@@ -3,15 +3,15 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js?v=18";
+} from "./body_map.js?v=19";
 import {
   PCS_ITEMS,
   TSK13_ITEMS,
   computeScaleBreakdown,
   buildClinicalNoteFromBreakdown,
   parseTallyScalesCsv
-} from "./scales.js?v=18";
-import { renderAnamnesisTab } from "./anamnesis.js?v=18";
+} from "./scales.js?v=19";
+import { renderAnamnesisTab } from "./anamnesis.js?v=19";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
@@ -1598,15 +1598,41 @@ function inferPackageCategory(pkg) {
   return PACKAGE_CATALOG[1];
 }
 
+function shortPackageTitle(pkg) {
+  const raw = String(pkg?.name || "").trim();
+  const stripped = raw.replace(
+    /^(?:Fisioterapia|PT\s+Normale|PT\s+SC\s*(?:\(Sport\s+Conditioning\))?|PT\s+Duetto|BlVck)\s*·\s*/i,
+    ""
+  );
+  return stripped || raw;
+}
+
+function sortPackagesActiveFirst(list) {
+  const rank = (st) => (st === "attivo" ? 0 : st === "sospeso" ? 1 : 2);
+  return [...(list || [])].sort((a, b) => {
+    const d = rank(a.status) - rank(b.status);
+    if (d !== 0) return d;
+    const da = String(a.purchased_date || "");
+    const db = String(b.purchased_date || "");
+    if (da !== db) return db.localeCompare(da);
+    return Number(b.id || 0) - Number(a.id || 0);
+  });
+}
+
 function renderPersonTabPacchetti(viewport, dossier) {
   const p = dossier.person;
-  const packages = dossier.packages || [];
+  const packages = sortPackagesActiveFirst(dossier.packages || []).map((k) => ({
+    ...k,
+    first_name: p.first_name,
+    last_name: p.last_name
+  }));
 
   const pkgCards = packages.length
     ? packages
         .map((pkg) => {
           const cat = inferPackageCategory(pkg);
           const isOpen = isOpenSinglePackage(pkg);
+          const shortTitle = shortPackageTitle(pkg);
           const movRows = (pkg.movements || [])
             .map(
               (m) => `
@@ -1633,20 +1659,18 @@ function renderPersonTabPacchetti(viewport, dossier) {
                   <div>
                     <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                       <span class="tag ${cat.badgeClass}">${esc(cat.label)}</span>
-                      <h4 class="card-title">${esc(pkg.name)}</h4>
+                      <h4 class="card-title">${esc(shortTitle)}</h4>
                       <span class="tag ${pkg.status === "sospeso" ? "tag-warning" : ""}">${pkg.status === "sospeso" ? "sospeso" : "contatore aperto"}</span>
                     </div>
                     <div class="card-subtitle num">Inizio ${formatDateIt(pkg.purchased_date)}${pkg.notes ? ` · ${esc(pkg.notes)}` : ""}</div>
                   </div>
-                  <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
                     <button class="btn btn-sm btn-primary" data-pkg-consume="${pkg.id}" ${pkg.status === "sospeso" ? "disabled" : ""}>
                       ${ico("plus")} <span>1 seduta svolta</span>
                     </button>
-                    ${
-                      pkg.consumed_sessions > 0
-                        ? `<button class="btn btn-sm btn-secondary" data-pkg-undo="${pkg.id}" title="Rimuovi 1 seduta">${ico("rotateCcw")} <span>−1</span></button>`
-                        : ""
-                    }
+                    <button class="btn btn-sm btn-secondary" data-pkg-undo="${pkg.id}" title="Rimuovi 1 seduta" ${pkg.consumed_sessions <= 0 ? "disabled" : ""}>
+                      ${ico("rotateCcw")} <span>−1</span>
+                    </button>
                     <button class="btn btn-sm btn-secondary" data-pkg-convert="${pkg.id}">
                       <span>Converti in pacchetto</span>
                     </button>
@@ -1687,6 +1711,7 @@ function renderPersonTabPacchetti(viewport, dossier) {
           }
 
           const remTone = getSessionCounterTone(pkg.remaining_sessions, pkg.total_sessions);
+          const isExhausted = pkg.remaining_sessions <= 0;
           const remCardStyle =
             pkg.remaining_sessions > 0
               ? `background:${remTone.bg}; border-color:${remTone.border};`
@@ -1698,20 +1723,21 @@ function renderPersonTabPacchetti(viewport, dossier) {
                 <div>
                   <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                     <span class="tag ${cat.badgeClass}">${esc(cat.label)}</span>
-                    <h4 class="card-title">${esc(pkg.name)}</h4>
+                    <h4 class="card-title">${esc(shortTitle)}</h4>
                     <span class="tag ${pkg.status === "attivo" ? "tag-accent" : pkg.status === "esaurito" ? "" : "tag-warning"}">${esc(pkg.status)}</span>
                   </div>
                   <div class="card-subtitle num">Inizio ${formatDateIt(pkg.purchased_date)}${pkg.valid_until ? ` · Scadenza ${formatDateIt(pkg.valid_until)}` : ""}${pkg.notes ? ` · ${esc(pkg.notes)}` : ""}</div>
                 </div>
-                <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                  <button class="btn btn-sm btn-primary" data-pkg-consume="${pkg.id}" ${pkg.remaining_sessions <= 0 || pkg.status === "sospeso" ? "disabled" : ""}>
+                <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                  <button class="btn btn-sm ${isExhausted ? "btn-secondary" : "btn-primary"}" data-pkg-consume="${pkg.id}" ${isExhausted || pkg.status === "sospeso" ? "disabled" : ""}>
                     ${ico("minus")} <span>Seduta svolta</span>
                   </button>
-                  ${
-                    pkg.consumed_sessions > 0
-                      ? `<button class="btn btn-sm btn-secondary" data-pkg-undo="${pkg.id}" title="Ripristina 1 seduta">${ico("rotateCcw")} <span>+1</span></button>`
-                      : ""
-                  }
+                  <button class="btn btn-sm btn-secondary" data-pkg-undo="${pkg.id}" title="Ripristina 1 seduta" ${pkg.consumed_sessions <= 0 ? "disabled" : ""}>
+                    ${ico("rotateCcw")} <span>+1</span>
+                  </button>
+                  <button class="btn btn-sm ${isExhausted ? "btn-primary" : "btn-secondary"}" data-pkg-renew="${pkg.id}" title="Fai ripartire un nuovo pacchetto identico">
+                    <span>Rinnova uguale</span>
+                  </button>
                   <button class="btn btn-sm btn-ghost" data-pkg-suspend="${pkg.id}" data-pkg-status="${pkg.status}">
                     ${pkg.status === "sospeso" ? "Riattiva" : "Sospendi"}
                   </button>
@@ -1822,6 +1848,14 @@ function bindPackageActions(root, packagesList = []) {
       const pkgId = Number(btn.getAttribute("data-pkg-convert"));
       const pkg = (packagesList || []).find((k) => k.id === pkgId);
       if (pkg) showConvertPackageModal(pkg);
+    });
+  });
+
+  root.querySelectorAll("[data-pkg-renew]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const pkgId = Number(btn.getAttribute("data-pkg-renew"));
+      const pkg = (packagesList || []).find((k) => k.id === pkgId);
+      if (pkg) showRenewPackageModal(pkg);
     });
   });
 
@@ -1958,7 +1992,7 @@ async function renderPackagesView(container) {
     state.packagesCache = packages;
   }
 
-  const enriched = packages.map((pkg) => ({ ...pkg, _cat: inferPackageCategory(pkg) }));
+  const enriched = sortPackagesActiveFirst(packages).map((pkg) => ({ ...pkg, _cat: inferPackageCategory(pkg) }));
   const activePkgs = enriched.filter((k) => k.status === "attivo");
   const activeFixedPkgs = activePkgs.filter((k) => !isOpenSinglePackage(k));
   const remainingTotal = activeFixedPkgs.reduce((a, k) => a + Number(k.remaining_sessions || 0), 0);
@@ -1983,6 +2017,8 @@ async function renderPackagesView(container) {
   const rows = filtered
     .map((pkg) => {
       const isOpen = isOpenSinglePackage(pkg);
+      const isExhausted = !isOpen && pkg.remaining_sessions <= 0;
+      const shortTitle = shortPackageTitle(pkg);
       const tone = getSessionCounterTone(pkg.remaining_sessions, pkg.total_sessions);
       return `
       <tr>
@@ -1994,7 +2030,7 @@ async function renderPackagesView(container) {
         <td>
           <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
             <span class="tag ${pkg._cat.badgeClass}">${esc(pkg._cat.label)}</span>
-            <span style="font-weight:500;">${esc(pkg.name)}</span>
+            <span style="font-weight:500;">${esc(shortTitle)}</span>
             ${isOpen ? `<span class="tag">aperto</span>` : ""}
             ${pkg.status !== "attivo" ? `<span class="tag">${esc(pkg.status)}</span>` : ""}
           </div>
@@ -2010,20 +2046,23 @@ async function renderPackagesView(container) {
         <td>
           ${
             isOpen
-              ? `<span class="tag tag-accent num"><strong>${pkg.consumed_sessions}</strong> svolte</span>`
-              : `<span class="tag num" style="color:${tone.text}; background:${tone.bg}; border:1px solid ${tone.border};"><strong>${pkg.remaining_sessions}</strong> rim.</span>`
+              ? `<span class="tag tag-accent pkg-rem-pill num"><strong>${pkg.consumed_sessions}</strong> svolte</span>`
+              : `<span class="tag pkg-rem-pill num" style="color:${tone.text}; background:${tone.bg}; border:1px solid ${tone.border};"><strong>${pkg.remaining_sessions}</strong> rim.</span>`
           }
         </td>
         <td style="text-align:right; white-space:nowrap;">
-          ${
-            isOpen
-              ? `<button class="btn btn-xs btn-primary" data-pkg-consume="${pkg.id}" ${pkg.status === "sospeso" ? "disabled" : ""}>+1 seduta</button>
-                 ${pkg.consumed_sessions > 0 ? `<button class="btn btn-xs btn-secondary" data-pkg-undo="${pkg.id}" title="Rimuovi 1 seduta">−1</button>` : ""}
-                 <button class="btn btn-xs btn-secondary" data-pkg-convert="${pkg.id}">Converti</button>`
-              : `<button class="btn btn-xs btn-primary" data-pkg-consume="${pkg.id}" ${pkg.remaining_sessions <= 0 || pkg.status === "sospeso" ? "disabled" : ""}>−1 seduta</button>
-                 ${pkg.consumed_sessions > 0 ? `<button class="btn btn-xs btn-secondary" data-pkg-undo="${pkg.id}" title="Ripristina +1">+1</button>` : ""}`
-          }
-          <button class="btn btn-xs btn-ghost" data-open-person="${pkg.person_id}" data-person-tab="pacchetti">Scheda</button>
+          <div class="pkg-actions-grid">
+            ${
+              isOpen
+                ? `<button class="btn btn-xs btn-primary" data-pkg-consume="${pkg.id}" ${pkg.status === "sospeso" ? "disabled" : ""}>+1 seduta</button>
+                   <button class="btn btn-xs btn-secondary" data-pkg-undo="${pkg.id}" title="Rimuovi 1 seduta" ${pkg.consumed_sessions <= 0 ? "disabled" : ""}>−1</button>
+                   <button class="btn btn-xs btn-secondary" data-pkg-convert="${pkg.id}">Converti</button>`
+                : `<button class="btn btn-xs ${isExhausted ? "btn-secondary" : "btn-primary"}" data-pkg-consume="${pkg.id}" ${isExhausted || pkg.status === "sospeso" ? "disabled" : ""}>−1 seduta</button>
+                   <button class="btn btn-xs btn-secondary" data-pkg-undo="${pkg.id}" title="Ripristina +1" ${pkg.consumed_sessions <= 0 ? "disabled" : ""}>+1</button>
+                   <button class="btn btn-xs ${isExhausted ? "btn-primary" : "btn-secondary"}" data-pkg-renew="${pkg.id}" title="Fai ripartire un nuovo pacchetto identico">Rinnova</button>`
+            }
+            <button class="btn btn-xs btn-ghost" data-open-person="${pkg.person_id}" data-person-tab="pacchetti">Scheda</button>
+          </div>
         </td>
       </tr>`;
     })
@@ -2988,6 +3027,93 @@ function showEditPriorSessionsModal(dossier) {
     } catch (err) {
       if (saveBtn) saveBtn.disabled = false;
       alert(err.message || "Errore nel salvataggio.");
+    }
+  });
+}
+
+function showRenewPackageModal(pkg) {
+  const cat = inferPackageCategory(pkg);
+  const shortTitle = shortPackageTitle(pkg);
+  const fullName = [pkg.first_name, pkg.last_name].filter(Boolean).join(" ");
+  const totalSessions = Math.max(1, Number(pkg.total_sessions || 1));
+
+  openModal(`
+    <h2 class="modal-title">Rinnova pacchetto</h2>
+    <p style="margin:-6px 0 14px; font-size:13px; color:var(--text-secondary);">
+      Avvia un nuovo pacchetto identico${fullName ? ` per <strong class="sensitive-data">${esc(fullName)}</strong>` : ""}, mantenendo il precedente nello storico sedute svolte.
+    </p>
+
+    <div style="padding:12px 14px; border-radius:var(--radius-md); background:var(--bg-hover); border:1px solid var(--border); margin-bottom:14px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <span class="tag ${cat.badgeClass}">${esc(cat.label)}</span>
+        <strong style="font-size:14px; color:var(--text);">${esc(shortTitle)}</strong>
+      </div>
+      <span class="tag tag-accent num"><strong>${totalSessions}</strong> sedute</span>
+    </div>
+
+    <form id="renewPkgModalForm">
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">Data inizio</label>
+          <input class="form-control" type="date" name="purchased_date" value="${todayRomeStr()}" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Scadenza (opzionale)</label>
+          <input class="form-control" type="date" name="valid_until" />
+        </div>
+      </div>
+
+      <div style="margin:0 0 12px;">
+        <label class="anam-toggle-row" style="font-size:12.5px;">
+          <span class="toggle-switch">
+            <input type="checkbox" id="renewConsumeFirstCheck" />
+            <span class="toggle-track"></span>
+          </span>
+          <span class="anam-toggle-label">Scala già la 1ª seduta svolta oggi (1 / ${totalSessions})</span>
+        </label>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Note (opzionale)</label>
+        <input class="form-control" name="notes" value="${esc(pkg.notes || "")}" placeholder="${esc(cat.notePlaceholder)}" />
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="cancelRenewPkgBtn">Annulla</button>
+        <button type="submit" class="btn btn-primary" id="submitRenewPkgBtn">Avvia nuovo pacchetto</button>
+      </div>
+    </form>
+  `);
+
+  const firstCheck = document.getElementById("renewConsumeFirstCheck");
+  const submitBtn = document.getElementById("submitRenewPkgBtn");
+  submitBtn?.focus();
+
+  document.getElementById("cancelRenewPkgBtn")?.addEventListener("click", closeModal);
+  document.getElementById("renewPkgModalForm")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      await apiFetch("/api/packages", {
+        method: "POST",
+        body: {
+          person_id: Number(pkg.person_id),
+          service_area: pkg.service_area || cat.serviceArea,
+          name: pkg.name,
+          total_sessions: totalSessions,
+          initial_sessions: firstCheck?.checked ? 1 : 0,
+          price_eur: 0,
+          purchased_date: fd.get("purchased_date"),
+          valid_until: fd.get("valid_until"),
+          notes: fd.get("notes")
+        }
+      });
+      closeModal();
+      await refreshCurrentView();
+    } catch (err) {
+      if (submitBtn) submitBtn.disabled = false;
+      alert(err.message || "Errore nel rinnovo del pacchetto.");
     }
   });
 }
