@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS people (
     training_location TEXT,
     general_notes TEXT,
     anamnesis_json TEXT NOT NULL DEFAULT '{}',
+    prior_sessions_count INTEGER NOT NULL DEFAULT 0,
     physio_active INTEGER NOT NULL DEFAULT 0,
     fitness_active INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'attivo' CHECK (status IN ('attivo', 'archiviato')),
@@ -587,6 +588,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
             ("training_frequency", "TEXT"),
             ("training_location", "TEXT"),
             ("anamnesis_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("prior_sessions_count", "INTEGER NOT NULL DEFAULT 0"),
         ]:
             if col_name not in existing_cols:
                 conn.execute(f"ALTER TABLE people ADD COLUMN {col_name} {col_type}")

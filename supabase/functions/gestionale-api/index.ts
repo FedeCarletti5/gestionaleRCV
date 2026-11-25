@@ -1275,13 +1275,14 @@ Deno.serve(async (req: Request) => {
       const heightCm = parseIntOrNull(payload.height_cm);
       const weightKg = parseFloatOrNull(payload.weight_kg);
       const weightUpdatedAt = (payload.weight_updated_at || "").trim() || (weightKg !== null ? now.slice(0, 10) : null);
+      const priorSessionsCount = Math.max(0, parseIntOrNull(payload.prior_sessions_count) ?? 0);
 
       const [person] = await sql`
         INSERT INTO public.people (
           first_name, last_name, birth_date, tax_code, phone, email, address,
           profession, sport_activity, gender, height_cm, weight_kg, weight_updated_at,
           medical_history, current_pain_notes, goals, training_frequency, training_location,
-          general_notes, physio_active, fitness_active,
+          general_notes, prior_sessions_count, physio_active, fitness_active,
           status, is_fictitious, version, created_at, updated_at
         ) VALUES (
           ${firstName}, ${lastName},
@@ -1302,6 +1303,7 @@ Deno.serve(async (req: Request) => {
           ${(payload.training_frequency || "").trim() || null},
           ${(payload.training_location || "").trim() || null},
           ${(payload.general_notes || "").trim() || null},
+          ${priorSessionsCount},
           ${physioActive}, ${fitnessActive}, ${status}, 0, 1, ${now}, ${now}
         ) RETURNING *
       `;
@@ -1341,6 +1343,7 @@ Deno.serve(async (req: Request) => {
       };
       const nextHeight = parseIntOpt(payload.height_cm, current.height_cm ?? null);
       const nextWeight = parseFloatOpt(payload.weight_kg, current.weight_kg !== null && current.weight_kg !== undefined ? Number(current.weight_kg) : null);
+      const nextPriorSessions = Math.max(0, parseIntOpt(payload.prior_sessions_count, Number(current.prior_sessions_count || 0)) ?? 0);
       const currWeightNum = current.weight_kg !== null && current.weight_kg !== undefined ? Number(current.weight_kg) : null;
       const nextWeightUpdatedAt =
         payload.weight_updated_at !== undefined
@@ -1370,6 +1373,7 @@ Deno.serve(async (req: Request) => {
           training_frequency = ${payload.training_frequency !== undefined ? (payload.training_frequency || null) : (current.training_frequency ?? null)},
           training_location = ${payload.training_location !== undefined ? (payload.training_location || null) : (current.training_location ?? null)},
           general_notes = ${payload.general_notes !== undefined ? (payload.general_notes || null) : current.general_notes},
+          prior_sessions_count = ${nextPriorSessions},
           physio_active = ${physioActive},
           fitness_active = ${fitnessActive},
           status = ${status},

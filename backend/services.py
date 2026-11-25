@@ -171,9 +171,9 @@ def create_person(conn: sqlite3.Connection, payload: Dict[str, Any], actor: str 
                 first_name, last_name, birth_date, tax_code, phone, email, address,
                 profession, sport_activity, gender, height_cm, weight_kg, weight_updated_at,
                 medical_history, current_pain_notes, goals, training_frequency, training_location,
-                general_notes, physio_active, fitness_active,
+                general_notes, prior_sessions_count, physio_active, fitness_active,
                 status, is_fictitious, version, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             """,
             (
                 first_name,
@@ -195,6 +195,7 @@ def create_person(conn: sqlite3.Connection, payload: Dict[str, Any], actor: str 
                 (payload.get("training_frequency") or "").strip() or None,
                 (payload.get("training_location") or "").strip() or None,
                 (payload.get("general_notes") or "").strip() or None,
+                max(0, _parse_int(payload.get("prior_sessions_count")) or 0),
                 physio_active,
                 fitness_active,
                 status,
@@ -288,6 +289,11 @@ def update_person(
 
         new_height = _parse_int_opt(payload.get("height_cm"), current.get("height_cm")) if "height_cm" in payload else current.get("height_cm")
         new_weight = _parse_float_opt(payload.get("weight_kg"), current.get("weight_kg")) if "weight_kg" in payload else current.get("weight_kg")
+        new_prior_sessions = (
+            max(0, _parse_int_opt(payload.get("prior_sessions_count"), int(current.get("prior_sessions_count") or 0)) or 0)
+            if "prior_sessions_count" in payload
+            else int(current.get("prior_sessions_count") or 0)
+        )
         if "weight_updated_at" in payload:
             new_weight_updated = (payload.get("weight_updated_at") or "").strip() or None
         elif "weight_kg" in payload and new_weight != current.get("weight_kg") and new_weight is not None:
@@ -303,7 +309,7 @@ def update_person(
                 sport_activity = ?, gender = ?, height_cm = ?, weight_kg = ?,
                 weight_updated_at = ?, medical_history = ?, current_pain_notes = ?,
                 goals = ?, training_frequency = ?, training_location = ?,
-                general_notes = ?, physio_active = ?,
+                general_notes = ?, prior_sessions_count = ?, physio_active = ?,
                 fitness_active = ?, status = ?, version = ?, updated_at = ?
             WHERE id = ?
             """,
@@ -327,6 +333,7 @@ def update_person(
                 payload.get("training_frequency", current.get("training_frequency")),
                 payload.get("training_location", current.get("training_location")),
                 payload.get("general_notes", current["general_notes"]),
+                new_prior_sessions,
                 physio_active,
                 fitness_active,
                 status,

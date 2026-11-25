@@ -3,15 +3,15 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js?v=17";
+} from "./body_map.js?v=18";
 import {
   PCS_ITEMS,
   TSK13_ITEMS,
   computeScaleBreakdown,
   buildClinicalNoteFromBreakdown,
   parseTallyScalesCsv
-} from "./scales.js?v=17";
-import { renderAnamnesisTab } from "./anamnesis.js?v=17";
+} from "./scales.js?v=18";
+import { renderAnamnesisTab } from "./anamnesis.js?v=18";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
@@ -545,12 +545,16 @@ async function renderPersonDossierView(container, personId) {
   ];
 
   const age = calcAge(p.birth_date);
+  const lifetime = computePersonLifetimeSessions(dossier);
   const metaParts = [];
   if (p.birth_date) metaParts.push(`${formatDateIt(p.birth_date)}${age ? ` (${age})` : ""}`);
   if (p.gender) metaParts.push(p.gender);
   if (p.height_cm) metaParts.push(`${p.height_cm} cm`);
   if (p.weight_kg !== null && p.weight_kg !== undefined && p.weight_kg !== "") metaParts.push(`${p.weight_kg} kg`);
   if (p.phone) metaParts.push(p.phone);
+  if (lifetime.total > 0) {
+    metaParts.push(`${lifetime.total} ${lifetime.total === 1 ? "seduta svolta in totale" : "sedute svolte in totale"}`);
+  }
 
   container.innerHTML = `
     <div class="dossier-top">
@@ -757,6 +761,11 @@ function renderPersonTabProfilo(viewport, dossier) {
           <div><div class="info-item-label">Telefono</div><div class="info-item-val num">${val(p.phone)}</div></div>
           <div><div class="info-item-label">Email</div><div class="info-item-val">${val(p.email)}</div></div>
           <div><div class="info-item-label">CF / Indirizzo</div><div class="info-item-val">${val([p.tax_code, p.address].filter(Boolean).join(" · "))}</div></div>
+          ${(() => {
+            const lt = computePersonLifetimeSessions(dossier);
+            const sub = lt.prior > 0 ? ` (${lt.prior} pregresse + ${lt.tracked})` : "";
+            return `<div><div class="info-item-label">Sedute totali svolte</div><div class="info-item-val num"><strong>${lt.total}</strong>${sub}</div></div>`;
+          })()}
         </div>
       </div>
     `;
@@ -841,9 +850,10 @@ function renderPersonTabProfilo(viewport, dossier) {
           <div class="form-group"><label class="form-label">Obiettivi</label><textarea class="form-control" rows="2" name="goals">${esc(p.goals || "")}</textarea></div>
           <div class="form-group"><label class="form-label">Sport / Attività</label><textarea class="form-control" rows="2" name="sport_activity">${esc(p.sport_activity || "")}</textarea></div>
         </div>
-        <div class="grid-2">
+        <div class="grid-3">
           <div class="form-group"><label class="form-label">Frequenza settimanale</label><input class="form-control" name="training_frequency" value="${esc(p.training_frequency || "")}" /></div>
           <div class="form-group"><label class="form-label">Dove si allena</label><input class="form-control" name="training_location" value="${esc(p.training_location || "")}" /></div>
+          <div class="form-group"><label class="form-label">Sedute pregresse (prima del gestionale)</label><input class="form-control" type="number" min="0" step="1" name="prior_sessions_count" value="${Number(p.prior_sessions_count || 0)}" /></div>
         </div>
         <div class="form-group"><label class="form-label">Note generali</label><textarea class="form-control" rows="2" name="general_notes">${esc(p.general_notes || "")}</textarea></div>
 
@@ -887,6 +897,7 @@ function renderPersonTabProfilo(viewport, dossier) {
         goals: fd.get("goals"),
         training_frequency: fd.get("training_frequency"),
         training_location: fd.get("training_location"),
+        prior_sessions_count: Math.max(0, Number(fd.get("prior_sessions_count") || 0)),
         physio_active: fd.get("physio_active") === "on",
         fitness_active: fd.get("fitness_active") === "on",
         status: fd.get("status"),
@@ -1476,6 +1487,12 @@ function getSessionCounterTone(remaining, total = null) {
   };
 }
 
+function computePersonLifetimeSessions(dossier) {
+  const prior = Math.max(0, Number(dossier?.person?.prior_sessions_count || 0));
+  const tracked = (dossier?.packages || []).reduce((acc, k) => acc + Math.max(0, Number(k.consumed_sessions || 0)), 0);
+  return { prior, tracked, total: prior + tracked };
+}
+
 function isOpenSinglePackage(pkg) {
   return Boolean(pkg?.is_open_single) || Number(pkg?.total_sessions) === 0;
 }
@@ -1732,15 +1749,36 @@ function renderPersonTabPacchetti(viewport, dossier) {
         .join("")
     : `<div class="card"><div class="empty-state">Nessun pacchetto o seduta registrata per questa persona.</div></div>`;
 
+  const lifetime = computePersonLifetimeSessions(dossier);
+  const lifetimeSub =
+    lifetime.prior > 0
+      ? `${lifetime.prior} pregresse (prima del gestionale) + ${lifetime.tracked} registrate qui`
+      : `${lifetime.tracked} registrate sul gestionale · aggiungi le pregresse se già seguito in passato`;
+
   viewport.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
       <h3 class="card-title">Pacchetti e sedute</h3>
       <button class="btn btn-sm btn-primary" id="personNewPkgBtn">${ico("plus")} Nuovo pacchetto / sedute singole</button>
     </div>
+
+    <div class="card" style="padding:14px 18px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">
+      <div>
+        <div style="font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-muted);">Storico totale lezioni / sedute svolte</div>
+        <div style="font-size:12.5px; color:var(--text-secondary); margin-top:2px;" class="num">${esc(lifetimeSub)}</div>
+      </div>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <div class="num" style="font-size:28px; font-weight:700; color:var(--text); line-height:1;">${lifetime.total}</div>
+        <button type="button" class="btn btn-sm btn-secondary" id="editPriorSessionsBtn">
+          ${lifetime.prior > 0 ? "Modifica pregresse" : "+ Aggiungi pregresse"}
+        </button>
+      </div>
+    </div>
+
     ${pkgCards}
   `;
 
   document.getElementById("personNewPkgBtn")?.addEventListener("click", () => showNewPackageModal(p.id));
+  document.getElementById("editPriorSessionsBtn")?.addEventListener("click", () => showEditPriorSessionsModal(dossier));
   bindPackageActions(viewport, packages);
 }
 
@@ -2645,11 +2683,17 @@ function showNewPersonModal() {
         <div class="form-group"><label class="form-label">Problematiche / Dolori attuali</label><input class="form-control" name="current_pain_notes" /></div>
         <div class="form-group"><label class="form-label">Sport / Obiettivo</label><input class="form-control" name="goals" /></div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Percorso</label>
-        <div style="display:flex; gap:18px; padding-top:4px;">
-          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="physio_active" checked /> Fisio</label>
-          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="fitness_active" /> PT</label>
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">Percorso</label>
+          <div style="display:flex; gap:18px; padding-top:6px;">
+            <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="physio_active" checked /> Fisio</label>
+            <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="fitness_active" /> PT</label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Sedute già svolte in passato (retroattivo)</label>
+          <input class="form-control" type="number" min="0" step="1" name="prior_sessions_count" value="0" placeholder="0" />
         </div>
       </div>
       <div class="form-group"><label class="form-label">Note</label><textarea class="form-control" name="general_notes" rows="2"></textarea></div>
@@ -2678,6 +2722,7 @@ function showNewPersonModal() {
           goals: fd.get("goals"),
           physio_active: fd.get("physio_active") === "on",
           fitness_active: fd.get("fitness_active") === "on",
+          prior_sessions_count: Math.max(0, Number(fd.get("prior_sessions_count") || 0)),
           general_notes: fd.get("general_notes"),
           confirm_duplicate_override: fd.get("confirm_duplicate_override") === "1"
         }
@@ -2835,9 +2880,10 @@ async function showNewPackageModal(preselectedPersonId = null) {
     if (validUntilGroup) validUntilGroup.style.display = isOpenSingleSelected ? "none" : "block";
 
     if (sessionsInput) {
+      sessionsInput.disabled = isOpenSingleSelected;
       sessionsInput.required = !isOpenSingleSelected;
       if (isOpenSingleSelected) {
-        sessionsInput.value = "0";
+        sessionsInput.value = "1";
       } else if (preset.sessions !== null) {
         sessionsInput.value = String(preset.sessions);
       } else {
@@ -2860,23 +2906,89 @@ async function showNewPackageModal(preselectedPersonId = null) {
   document.getElementById("newPkgModalForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const totalSessions = isOpenSingleSelected ? 0 : Number(fd.get("total_sessions"));
-    await apiFetch("/api/packages", {
-      method: "POST",
-      body: {
-        person_id: Number(fd.get("person_id")),
-        service_area: fd.get("service_area"),
-        name: fd.get("name"),
-        total_sessions: totalSessions,
-        initial_sessions: isOpenSingleSelected && openStartCheck?.checked ? 1 : 0,
-        price_eur: 0,
-        purchased_date: fd.get("purchased_date"),
-        valid_until: isOpenSingleSelected ? "" : fd.get("valid_until"),
-        notes: fd.get("notes")
-      }
-    });
-    closeModal();
-    await refreshCurrentView();
+    const totalSessions = isOpenSingleSelected ? 0 : Math.max(1, Number(fd.get("total_sessions") || 1));
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      await apiFetch("/api/packages", {
+        method: "POST",
+        body: {
+          person_id: Number(fd.get("person_id")),
+          service_area: fd.get("service_area"),
+          name: fd.get("name"),
+          total_sessions: totalSessions,
+          initial_sessions: isOpenSingleSelected && openStartCheck?.checked ? 1 : 0,
+          price_eur: 0,
+          purchased_date: fd.get("purchased_date"),
+          valid_until: isOpenSingleSelected ? "" : fd.get("valid_until"),
+          notes: fd.get("notes")
+        }
+      });
+      closeModal();
+      await refreshCurrentView();
+    } catch (err) {
+      if (submitBtn) submitBtn.disabled = false;
+      alert(err.message || "Errore nella creazione del pacchetto.");
+    }
+  });
+}
+
+function showEditPriorSessionsModal(dossier) {
+  const p = dossier.person;
+  const lt = computePersonLifetimeSessions(dossier);
+
+  openModal(`
+    <h2 class="modal-title">Sedute pregresse (storico retroattivo)</h2>
+    <p style="margin:-6px 0 14px; font-size:13px; color:var(--text-secondary);">
+      Inserisci il numero di lezioni o sedute già svolte con <strong>${esc(p.first_name)} ${esc(p.last_name)}</strong> prima di iniziare a usare il gestionale.
+      Verranno sommate automaticamente alle sedute tracciate qui.
+    </p>
+    <form id="editPriorSessionsForm">
+      <div class="form-group">
+        <label class="form-label">Sedute svolte in passato *</label>
+        <input class="form-control" type="number" min="0" step="1" name="prior_sessions_count" id="priorSessionsInput" value="${lt.prior}" required />
+      </div>
+      <div id="priorPreviewBox" style="padding:10px 12px; border-radius:var(--radius-md); background:var(--bg-hover); border:1px solid var(--border); font-size:13px; color:var(--text-secondary); margin-bottom:12px;"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="cancelPriorBtn">Annulla</button>
+        <button type="submit" class="btn btn-primary" id="savePriorBtn">Salva conteggio</button>
+      </div>
+    </form>
+  `);
+
+  const inp = document.getElementById("priorSessionsInput");
+  const prev = document.getElementById("priorPreviewBox");
+  const saveBtn = document.getElementById("savePriorBtn");
+
+  const paintPrev = () => {
+    const val = Math.max(0, Math.floor(Number(inp?.value || 0)));
+    if (prev) {
+      prev.innerHTML = `<strong class="num">${val}</strong> pregresse + <strong class="num">${lt.tracked}</strong> sul gestionale = <strong class="num" style="color:var(--text);">${val + lt.tracked} sedute totali svolte</strong>`;
+    }
+  };
+  paintPrev();
+  inp?.addEventListener("input", paintPrev);
+  inp?.focus();
+  inp?.select?.();
+
+  document.getElementById("cancelPriorBtn")?.addEventListener("click", closeModal);
+  document.getElementById("editPriorSessionsForm")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const val = Math.max(0, Math.floor(Number(inp?.value || 0)));
+    if (saveBtn) saveBtn.disabled = true;
+    try {
+      await apiFetch(`/api/people/${p.id}`, {
+        method: "PUT",
+        body: {
+          expected_version: p.version,
+          prior_sessions_count: val
+        }
+      });
+      closeModal();
+      await refreshCurrentView();
+    } catch (err) {
+      if (saveBtn) saveBtn.disabled = false;
+      alert(err.message || "Errore nel salvataggio.");
+    }
   });
 }
 
