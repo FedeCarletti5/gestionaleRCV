@@ -3,15 +3,16 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js?v=19";
+} from "./body_map.js?v=20";
 import {
   PCS_ITEMS,
   TSK13_ITEMS,
   computeScaleBreakdown,
   buildClinicalNoteFromBreakdown,
   parseTallyScalesCsv
-} from "./scales.js?v=19";
-import { renderAnamnesisTab } from "./anamnesis.js?v=19";
+} from "./scales.js?v=20";
+import { renderAnamnesisTab } from "./anamnesis.js?v=20";
+import { renderAgendaView, showAppleCalendarConfigModal } from "./agenda.js?v=20";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
@@ -41,6 +42,9 @@ const state = {
   packagesCache: null,
   packagesCategoryFilter: "tutti",
   packagesStatusFilter: "tutti",
+  agendaView: "day",
+  agendaDate: "",
+  agendaDoneUids: new Set(),
   bodyMapDraft: {
     viewSide: "anterior",
     markerKind: "point",
@@ -297,8 +301,28 @@ function normalizePersonTab(tab) {
   return tab || "profilo";
 }
 
+function getAgendaContext() {
+  return {
+    state,
+    apiFetch,
+    openModal,
+    closeModal,
+    refreshCurrentView,
+    bindCommonActionButtons,
+    showRenewPackageModal,
+    helpers: {
+      todayRomeStr,
+      getSessionCounterTone,
+      inferPackageCategory,
+      shortPackageTitle,
+      isOpenSinglePackage,
+      sortPackagesActiveFirst
+    }
+  };
+}
+
 async function navigateTo(navKey, options = {}) {
-  state.currentNav = ["people", "packages", "security"].includes(navKey) ? navKey : "people";
+  state.currentNav = ["people", "agenda", "packages", "security"].includes(navKey) ? navKey : "people";
   if (options.personId !== undefined) {
     if (options.personId !== state.selectedPersonId) {
       state.profileEditMode = false;
@@ -326,6 +350,8 @@ async function refreshCurrentView() {
     } else {
       await renderPeopleListView(container);
     }
+  } else if (state.currentNav === "agenda") {
+    await renderAgendaView(container, getAgendaContext());
   } else if (state.currentNav === "packages") {
     await renderPackagesView(container);
   } else if (state.currentNav === "security") {
@@ -2140,7 +2166,10 @@ async function renderPackagesView(container) {
 // ============================================================================
 
 async function renderSecurityView(container) {
-  const sec = await apiFetch("/api/security/overview");
+  const [sec, calCfg] = await Promise.all([
+    apiFetch("/api/security/overview"),
+    apiFetch("/api/calendar/config").catch(() => ({ configured: false }))
+  ]);
   const bkpRows = (sec.backups || [])
     .map(
       (b) => `
@@ -2156,6 +2185,34 @@ async function renderSecurityView(container) {
   container.innerHTML = `
     <div class="page-header">
       <h1 class="page-title">Impostazioni</h1>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h3 class="card-title">Apple Calendar (Agenda in sola lettura)</h3>
+          <div class="card-subtitle">Specchio live privato del tuo calendario Apple tramite CalDAV cifrato — nessun evento salvato nel database.</div>
+        </div>
+        <span class="tag ${calCfg?.configured ? "tag-success" : ""}">${calCfg?.configured ? "Collegato" : "Non collegato"}</span>
+      </div>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div style="font-size:13px; color:var(--text-secondary);">
+          ${
+            calCfg?.configured
+              ? `<span style="display:inline-flex; align-items:center; gap:6px;">
+                   <span class="cal-dot" style="background:${esc(calCfg.calendar_color || "#1e4976")};"></span>
+                   <strong>${esc(calCfg.calendar_name || "Lavoro")}</strong> · ${esc(calCfg.apple_id || "")}
+                 </span>`
+              : "Nessun calendario Apple collegato. Configuralo per visualizzare la tua giornata nella sezione Agenda."
+          }
+        </div>
+        <div style="display:flex; gap:8px;">
+          ${calCfg?.configured ? `<button type="button" class="btn btn-sm btn-secondary" id="openAgendaFromSettingsBtn">Apri Agenda</button>` : ""}
+          <button type="button" class="btn btn-sm btn-primary" id="configAppleCalFromSettingsBtn">
+            ${calCfg?.configured ? "Modifica / Scollega" : "Collega Apple Calendar"}
+          </button>
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -2214,6 +2271,13 @@ async function renderSecurityView(container) {
       </div>
     </div>
   `;
+
+  document.getElementById("configAppleCalFromSettingsBtn")?.addEventListener("click", () => {
+    showAppleCalendarConfigModal(getAgendaContext());
+  });
+  document.getElementById("openAgendaFromSettingsBtn")?.addEventListener("click", () => {
+    navigateTo("agenda");
+  });
 
   document.getElementById("updateCredentialsForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();

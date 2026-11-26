@@ -1,6 +1,14 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.5";
 import { createClient } from "npm:@supabase/supabase-js@2.49.1";
+import {
+  assertAllowedIcloudUrl,
+  decryptSecret,
+  discoverIcloudCalendars,
+  encryptSecret,
+  fetchIcloudCalendarEvents,
+  sanitizeUserSettings,
+} from "./caldav.ts";
 
 const dbUrl = Deno.env.get("SUPABASE_DB_URL")!;
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -719,7 +727,7 @@ Deno.serve(async (req: Request) => {
           username: session.username,
           display_name: session.display_name,
           totp_enabled: Boolean(session.totp_enabled),
-          settings: JSON.parse(session.settings_json || "{}"),
+          settings: sanitizeUserSettings(session.settings_json),
         },
         csrf_token: session.csrf_token,
       });
@@ -1202,6 +1210,62 @@ Deno.serve(async (req: Request) => {
             "Content-Disposition": `${disp}; filename="${att.original_filename}"`,
           },
         });
+      }
+
+      if (path === "/api/calendar/config") {
+        const [user] = await sql`SELECT settings_json FROM public.users WHERE id = ${session.user_id}`;
+        const sanitized = sanitizeUserSettings(user?.settings_json);
+        const cfg = sanitized.apple_caldav || { configured: false, apple_id: "", calendar_name: "", calendar_color: "#1e4976" };
+        return jsonResponse(200, cfg);
+      }
+
+      if (path === "/api/calendar/events") {
+        const [user] = await sql`SELECT settings_json FROM public.users WHERE id = ${session.user_id}`;
+        let rawSettings: Record<string, any> = {};
+        try {
+          rawSettings = JSON.parse(user?.settings_json || "{}") || {};
+        } catch {
+          rawSettings = {};
+        }
+        const cfg = rawSettings.apple_caldav;
+        if (!cfg || !cfg.apple_id || !cfg.password_enc || !cfg.calendar_url) {
+          return jsonResponse(200, { configured: false, events: [] });
+        }
+
+        const todayYmd = nowRomeIso().slice(0, 10);
+        const fromDate = (url.searchParams.get("from") || todayYmd).trim();
+        const toDate = (url.searchParams.get("to") || fromDate).trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate) || toDate < fromDate) {
+          throw new ValidationError("Intervallo date non valido (formato atteso YYYY-MM-DD).");
+        }
+        const [fy, fm, fd] = fromDate.split("-").map(Number);
+        const [ty, tm, td] = toDate.split("-").map(Number);
+        const spanDays = Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86400_000);
+        if (spanDays > 35) {
+          throw new ValidationError("Intervallo massimo consentito: 35 giorni.");
+        }
+
+        const appPassword = await decryptSecret(cfg.password_enc, supabaseServiceKey);
+        try {
+          const events = await fetchIcloudCalendarEvents({
+            appleId: cfg.apple_id,
+            appPassword,
+            calendarUrl: cfg.calendar_url,
+            fromDate,
+            toDate,
+          });
+          return jsonResponse(200, {
+            configured: true,
+            calendar_name: cfg.calendar_name || "Apple Calendar",
+            calendar_color: cfg.calendar_color || "#1e4976",
+            from: fromDate,
+            to: toDate,
+            synced_at: nowRomeIso(),
+            events,
+          });
+        } catch (calErr: any) {
+          throw new ValidationError(calErr?.message || "Errore durante la sincronizzazione con Apple Calendar.");
+        }
       }
 
       if (path === "/api/security/overview") {
@@ -2884,6 +2948,102 @@ Deno.serve(async (req: Request) => {
         packages_count: pkgCount.c,
         attachments_verified: aCount.c,
       });
+    }
+
+    // --- APPLE CALENDAR (CALDAV PRIVATO SOLA LETTURA) ---
+    if (path === "/api/calendar/discover" && method === "POST") {
+      const [user] = await sql`SELECT settings_json FROM public.users WHERE id = ${session.user_id}`;
+      let rawSettings: Record<string, any> = {};
+      try {
+        rawSettings = JSON.parse(user?.settings_json || "{}") || {};
+      } catch {
+        rawSettings = {};
+      }
+      let appleId = String(payload.apple_id || "").trim();
+      let appPassword = String(payload.app_password || "").trim();
+      if (payload.use_saved && rawSettings.apple_caldav?.password_enc) {
+        if (!appleId) appleId = String(rawSettings.apple_caldav.apple_id || "");
+        if (!appPassword) appPassword = await decryptSecret(rawSettings.apple_caldav.password_enc, supabaseServiceKey);
+      }
+      if (!appleId || !appPassword) {
+        throw new ValidationError("Inserisci il tuo Apple ID e la Password specifica per app generata su account.apple.com.");
+      }
+      try {
+        const calendars = await discoverIcloudCalendars(appleId, appPassword);
+        if (!calendars.length) {
+          throw new ValidationError("Nessun calendario eventi trovato su questo account iCloud.");
+        }
+        return jsonResponse(200, { calendars });
+      } catch (err: any) {
+        if (err instanceof ValidationError) throw err;
+        throw new ValidationError(err?.message || "Impossibile connettersi ad Apple iCloud.");
+      }
+    }
+
+    if (path === "/api/calendar/config" && method === "POST") {
+      const [user] = await sql`SELECT settings_json FROM public.users WHERE id = ${session.user_id}`;
+      let rawSettings: Record<string, any> = {};
+      try {
+        rawSettings = JSON.parse(user?.settings_json || "{}") || {};
+      } catch {
+        rawSettings = {};
+      }
+      const prevCfg = rawSettings.apple_caldav || {};
+      const appleId = String(payload.apple_id || prevCfg.apple_id || "").trim();
+      const rawPassword = String(payload.app_password || "").trim();
+      const calendarUrl = String(payload.calendar_url || "").trim();
+      const calendarName = String(payload.calendar_name || "Lavoro").trim();
+      const calendarColor = String(payload.calendar_color || "#1e4976").trim();
+
+      if (!appleId) throw new ValidationError("Apple ID obbligatorio.");
+      if (!calendarUrl) throw new ValidationError("Seleziona un calendario Apple.");
+      try {
+        assertAllowedIcloudUrl(calendarUrl);
+      } catch (err: any) {
+        throw new ValidationError(err?.message || "URL calendario Apple non valido.");
+      }
+
+      let passwordEnc = prevCfg.password_enc || "";
+      if (rawPassword) {
+        passwordEnc = await encryptSecret(rawPassword, supabaseServiceKey);
+      }
+      if (!passwordEnc) {
+        throw new ValidationError("Password specifica per app obbligatoria.");
+      }
+
+      const now = nowRomeIso();
+      rawSettings.apple_caldav = {
+        apple_id: appleId,
+        password_enc: passwordEnc,
+        calendar_url: calendarUrl,
+        calendar_name: calendarName,
+        calendar_color: calendarColor,
+        updated_at: now,
+      };
+      await sql`
+        UPDATE public.users SET settings_json = ${JSON.stringify(rawSettings)}, updated_at = ${now}
+        WHERE id = ${session.user_id}
+      `;
+      await logAudit("CONNECT_APPLE_CALENDAR", "users", session.user_id, null, `Collegato Apple Calendar '${calendarName}' (sola lettura)`, actor);
+      return jsonResponse(200, sanitizeUserSettings(rawSettings).apple_caldav);
+    }
+
+    if (path === "/api/calendar/config" && method === "DELETE") {
+      const [user] = await sql`SELECT settings_json FROM public.users WHERE id = ${session.user_id}`;
+      let rawSettings: Record<string, any> = {};
+      try {
+        rawSettings = JSON.parse(user?.settings_json || "{}") || {};
+      } catch {
+        rawSettings = {};
+      }
+      delete rawSettings.apple_caldav;
+      const now = nowRomeIso();
+      await sql`
+        UPDATE public.users SET settings_json = ${JSON.stringify(rawSettings)}, updated_at = ${now}
+        WHERE id = ${session.user_id}
+      `;
+      await logAudit("DISCONNECT_APPLE_CALENDAR", "users", session.user_id, null, "Scollegato Apple Calendar", actor);
+      return jsonResponse(200, { configured: false, apple_id: "", calendar_name: "", calendar_color: "#1e4976" });
     }
 
     return jsonResponse(404, { error: `Endpoint ${method} non trovato: ${path}` });
