@@ -25,6 +25,23 @@ export const PAIN_QUALITIES_COL2 = [
   "Urente"
 ];
 
+export const INSORGENZA_OPTIONS = [
+  { value: "", label: "Seleziona..." },
+  { value: "Improvvisa", label: "Improvvisa" },
+  { value: "Graduale", label: "Graduale" },
+  { value: "Subdola", label: "Subdola" },
+  { value: "Acuta su cronica", label: "Acuta su cronica" }
+];
+
+export const TRAUMA_OPTIONS = [
+  { value: "", label: "Seleziona..." },
+  { value: "Nessuno", label: "Nessuno" },
+  { value: "Diretto", label: "Diretto" },
+  { value: "Indiretto", label: "Indiretto" },
+  { value: "Sovraccarico", label: "Sovraccarico / Microtraumi" },
+  { value: "Post-chirurgico", label: "Post-chirurgico" }
+];
+
 export const ADDITIONAL_INFO_SECTIONS = [
   { key: "gonfiore", label: "Gonfiore", placeholder: "Presenza, sede, insorgenza, variazione nella giornata..." },
   { key: "funzione", label: "Funzione", placeholder: "Movimenti limitati, gesti difficili, capacità residua..." },
@@ -216,9 +233,35 @@ const BODY_CHART_VARIANTS = {
   }
 };
 
-function isFemaleGender(gender) {
+export function isFemaleGender(gender) {
   const g = String(gender || "").trim().toLowerCase();
   return g === "donna" || g === "f" || g === "femmina" || g === "female";
+}
+
+function formatAuditDateTime(isoStr) {
+  if (!isoStr) return "";
+  try {
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return String(isoStr).slice(0, 16).replace("T", " ");
+    return new Intl.DateTimeFormat("it-IT", {
+      timeZone: "Europe/Rome",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(d);
+  } catch {
+    return String(isoStr).slice(0, 16).replace("T", " ");
+  }
+}
+
+function formatInsorgenzaSummary(tipo, trauma, note) {
+  const parts = [];
+  if (tipo) parts.push(tipo);
+  if (trauma) parts.push(trauma === "Nessuno" ? "Nessun trauma" : `Trauma: ${trauma}`);
+  if (!parts.length && note && note.trim()) parts.push("Note presenti");
+  return parts.length ? parts.join(" · ") : "Non compilata";
 }
 
 function severityColorForValue(rawVal) {
@@ -272,7 +315,7 @@ function applyBrushSliderVisual(slider, color) {
  * Laterale SX, Posteriore, Dorso e Pianta piedi) con livello vettoriale per il disegno a mano libera.
  * L'immagine di base è un asset statico (0 byte su Supabase); nel DB salviamo solo i tratti vettoriali.
  */
-function renderBodyChartSvg(strokes = [], variant = "male") {
+export function renderBodyChartSvg(strokes = [], variant = "male", { interactive = true } = {}) {
   const cfg = BODY_CHART_VARIANTS[variant === "female" ? "female" : "male"];
 
   const strokePaths = (strokes || [])
@@ -291,10 +334,10 @@ function renderBodyChartSvg(strokes = [], variant = "male") {
     .join("");
 
   return `
-    <svg id="freehandBodySvg" class="body-chart-svg" viewBox="0 0 ${BODY_VB_W} ${BODY_VB_H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Body chart anatomica interattiva">
+    <svg ${interactive ? 'id="freehandBodySvg"' : ""} class="body-chart-svg ${interactive ? "" : "body-chart-svg-static"}" viewBox="0 0 ${BODY_VB_W} ${BODY_VB_H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Body chart anatomica">
       <rect x="0" y="0" width="${BODY_VB_W}" height="${BODY_VB_H}" fill="#ffffff" />
       <image
-        id="bodyChartBgImg"
+        ${interactive ? 'id="bodyChartBgImg"' : ""}
         href="${cfg.href}"
         x="0"
         y="0"
@@ -311,15 +354,15 @@ function renderBodyChartSvg(strokes = [], variant = "male") {
         <text x="748" y="34">SX</text>
         <text x="918" y="34">DX</text>
         <text x="500" y="334">LATO DX</text>
-        <text id="bcLblDorso" x="${cfg.labels.dorso}" y="656">DORSO</text>
-        <text id="bcLblAnteriore" x="${cfg.labels.anteriore}" y="656">ANTERIORE</text>
+        <text ${interactive ? 'id="bcLblDorso"' : ""} x="${cfg.labels.dorso}" y="656">DORSO</text>
+        <text ${interactive ? 'id="bcLblAnteriore"' : ""} x="${cfg.labels.anteriore}" y="656">ANTERIORE</text>
         <text x="500" y="656">LATO SX</text>
-        <text id="bcLblPosteriore" x="${cfg.labels.posteriore}" y="656">POSTERIORE</text>
-        <text id="bcLblPianta" x="${cfg.labels.pianta}" y="656">PIANTA</text>
+        <text ${interactive ? 'id="bcLblPosteriore"' : ""} x="${cfg.labels.posteriore}" y="656">POSTERIORE</text>
+        <text ${interactive ? 'id="bcLblPianta"' : ""} x="${cfg.labels.pianta}" y="656">PIANTA</text>
       </g>
 
       <!-- Tratti disegnati a mano libera -->
-      <g id="freehandStrokesLayer" style="pointer-events:none;">${strokePaths}</g>
+      <g ${interactive ? 'id="freehandStrokesLayer"' : ""} style="pointer-events:none;">${strokePaths}</g>
     </svg>
   `;
 }
@@ -344,6 +387,14 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
     fattori_provocativi: "",
     fattori_allevianti: ""
   };
+  const insorgenza = epIntake.insorgenza || {
+    tipo: "",
+    trauma: "",
+    note: ""
+  };
+  const insorgenzaSummary = formatInsorgenzaSummary(insorgenza.tipo, insorgenza.trauma, insorgenza.note);
+  const hasInsorgenza = Boolean(insorgenza.tipo || insorgenza.trauma || (insorgenza.note || "").trim());
+
   const dolore = epIntake.dolore || {
     qualita: [],
     nprs: 0,
@@ -366,6 +417,17 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
   let brushColor = INK_COLORS[0].id;
   let brushWidth = 10;
 
+  const epCreatedLabel = activeEp?.created_at ? formatAuditDateTime(activeEp.created_at) : "";
+  const epUpdatedLabel = activeEp?.updated_at ? formatAuditDateTime(activeEp.updated_at) : "";
+  const epMetaLine = activeEp
+    ? [
+        epCreatedLabel ? `Creato il ${epCreatedLabel}` : "",
+        epUpdatedLabel && epUpdatedLabel !== epCreatedLabel ? `Ultima modifica ${epUpdatedLabel}` : ""
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
+
   const epBarHtml = `
     <div class="anam-sticky-bar">
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
@@ -376,7 +438,7 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
               </select>`
             : `<span style="font-size:13px; color:var(--text-muted); font-weight:500;">Nuova scheda anamnestica</span>`
         }
-        <button type="button" class="btn btn-sm btn-ghost" id="anamNewEpBtn">+ Nuovo consulto</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="anamNewEpBtn">+ Nuovo episodio</button>
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         <span id="anamDirtyBadge" class="tag tag-warning" style="display:none;">Modifiche non salvate</span>
@@ -386,6 +448,7 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
 
     <div class="anam-jump-bar">
       <a href="#sec-motivo" class="anam-jump-pill">Motivo</a>
+      <a href="#sec-insorgenza" class="anam-jump-pill">Insorgenza</a>
       <a href="#sec-dolore" class="anam-jump-pill">Dolore</a>
       <a href="#sec-info" class="anam-jump-pill">Dettagli</a>
       <a href="#sec-bodychart" class="anam-jump-pill">Body chart</a>
@@ -399,6 +462,47 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
     ${epBarHtml}
 
     <form id="anamnesisMasterForm">
+      <!-- TESTATA EPISODIO INLINE (TITOLO + TAG/DISTRETTO + DATA CREAZIONE/MODIFICA) -->
+      <div class="anam-ep-strip">
+        <div class="anam-ep-strip-grid">
+          <div class="anam-ep-field">
+            <label class="anam-ep-label" for="anamEpTitleInput">Episodio clinico</label>
+            <input
+              type="text"
+              id="anamEpTitleInput"
+              class="form-control form-control-sm anam-ep-title-input"
+              name="episode_title"
+              value="${esc(activeEp?.title || "")}"
+              placeholder="Nome episodio clinico (es. Spalla destra, Lombalgia...)"
+            />
+          </div>
+          <div class="anam-ep-tag-group">
+            <label class="anam-ep-label" for="anamEpTagInput">Tag / Distretto</label>
+            <div class="anam-ep-tag-row">
+              <div class="anam-tag-input-wrap">
+                <svg class="anam-tag-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+                <input
+                  type="text"
+                  id="anamEpTagInput"
+                  class="form-control form-control-sm"
+                  name="episode_body_region"
+                  value="${esc(activeEp?.body_region || "")}"
+                  placeholder="Es. Spalla, Rachide lombare..."
+                />
+              </div>
+              <select class="form-control form-control-sm" name="episode_laterality" aria-label="Lato" style="width:106px;">
+                <option value="N/A" ${!activeEp?.laterality || activeEp?.laterality === "N/A" ? "selected" : ""}>Lato —</option>
+                <option value="DX" ${activeEp?.laterality === "DX" ? "selected" : ""}>DX</option>
+                <option value="SX" ${activeEp?.laterality === "SX" ? "selected" : ""}>SX</option>
+                <option value="Bilaterale" ${activeEp?.laterality === "Bilaterale" ? "selected" : ""}>Bilaterale</option>
+                <option value="Centrale" ${activeEp?.laterality === "Centrale" ? "selected" : ""}>Centrale</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        ${epMetaLine ? `<div class="anam-ep-meta num">${esc(epMetaLine)}</div>` : ""}
+      </div>
+
       <!-- 1. MOTIVO DEL CONSULTO -->
       <section id="sec-motivo" class="card">
         <div class="card-header"><h3 class="card-title">Motivo del consulto</h3></div>
@@ -456,7 +560,53 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
         </div>
       </section>
 
-      <!-- 2. DOLORE -->
+      <!-- 2. INSORGENZA -->
+      <section id="sec-insorgenza">
+        <details class="clean-details" open>
+          <summary>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span>Insorgenza</span>
+              <span class="tag ${hasInsorgenza ? "tag-accent" : ""}" id="insorgenzaSummaryBadge">${esc(insorgenzaSummary)}</span>
+            </div>
+            <span style="font-size:12px; color:var(--text-muted);">Apri / Chiudi</span>
+          </summary>
+          <div class="details-body">
+            <div class="grid-2" style="align-items:start;">
+              <div style="display:flex; flex-direction:column; gap:12px;">
+                <div class="form-group" style="margin:0;">
+                  <label class="form-label" for="insorgenzaTipoSel">Insorgenza</label>
+                  <select class="form-control" id="insorgenzaTipoSel" name="insorgenza_tipo">
+                    ${INSORGENZA_OPTIONS.map(
+                      (o) => `<option value="${esc(o.value)}" ${(insorgenza.tipo || "") === o.value ? "selected" : ""}>${esc(o.label)}</option>`
+                    ).join("")}
+                  </select>
+                </div>
+                <div class="form-group" style="margin:0;">
+                  <label class="form-label" for="insorgenzaTraumaSel">Trauma</label>
+                  <select class="form-control" id="insorgenzaTraumaSel" name="insorgenza_trauma">
+                    ${TRAUMA_OPTIONS.map(
+                      (o) => `<option value="${esc(o.value)}" ${(insorgenza.trauma || "") === o.value ? "selected" : ""}>${esc(o.label)}</option>`
+                    ).join("")}
+                  </select>
+                </div>
+              </div>
+              <div class="form-group" style="margin:0;">
+                <label class="form-label" for="insorgenzaNoteTxt">Tempo / Note</label>
+                <textarea
+                  class="form-control"
+                  id="insorgenzaNoteTxt"
+                  name="insorgenza_note"
+                  rows="4"
+                  style="min-height:106px;"
+                  placeholder="Quando è iniziato il sintomo, dinamica dell'eventuale trauma, evoluzione iniziale..."
+                >${esc(insorgenza.note || "")}</textarea>
+              </div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- 3. DOLORE -->
       <section id="sec-dolore">
         <details class="clean-details" open>
           <summary>
@@ -669,9 +819,25 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
     if (dirtyBadge) dirtyBadge.style.display = "inline-flex";
   };
 
-  form?.addEventListener("input", markDirty);
+  const updateInsorgenzaBadge = () => {
+    const tVal = document.getElementById("insorgenzaTipoSel")?.value || "";
+    const trVal = document.getElementById("insorgenzaTraumaSel")?.value || "";
+    const nVal = document.getElementById("insorgenzaNoteTxt")?.value || "";
+    const bEl = document.getElementById("insorgenzaSummaryBadge");
+    if (bEl) {
+      const filled = Boolean(tVal || trVal || nVal.trim());
+      bEl.textContent = formatInsorgenzaSummary(tVal, trVal, nVal);
+      bEl.className = `tag ${filled ? "tag-accent" : ""}`;
+    }
+  };
+
+  form?.addEventListener("input", () => {
+    markDirty();
+    updateInsorgenzaBadge();
+  });
   form?.addEventListener("change", () => {
     markDirty();
+    updateInsorgenzaBadge();
     const countChecked = (name) => form.querySelectorAll(`input[name="${name}"]:checked`).length;
     const pCnt = countChecked("pain_quality");
     const fCnt = countChecked("fam_cond");
@@ -864,7 +1030,13 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
   });
 
   // --- Episodi e salvataggio ---
-  document.getElementById("anamEpisodeSelect")?.addEventListener("change", (e) => {
+  const epSelect = document.getElementById("anamEpisodeSelect");
+  epSelect?.addEventListener("change", (e) => {
+    const isDirty = dirtyBadge && dirtyBadge.style.display !== "none";
+    if (isDirty && !window.confirm("Ci sono modifiche non salvate nell'anamnesi. Cambiare episodio comunque?")) {
+      if (activeEp) epSelect.value = String(activeEp.id);
+      return;
+    }
     onSelectEpisode?.(Number(e.target.value));
   });
   document.getElementById("anamNewEpBtn")?.addEventListener("click", () => onNewEpisode?.());
@@ -881,6 +1053,9 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
 
     const payload = {
       episode_id: activeEp ? activeEp.id : null,
+      episode_title: String(fd.get("episode_title") || "").trim(),
+      body_region: String(fd.get("episode_body_region") || "").trim(),
+      laterality: String(fd.get("episode_laterality") || "N/A").trim() || "N/A",
       person_anamnesis: {
         familiare: { selected: getAll("fam_cond"), note: String(fd.get("fam_note") || "").trim() },
         remota: { selected: getAll("rem_cond"), note: String(fd.get("rem_note") || "").trim() }
@@ -895,6 +1070,11 @@ export function renderAnamnesisTab(viewport, dossier, { selectedEpisodeId, onSel
           nprs_peggiore: Math.round(Number(fd.get("nprs_peggiore") || 0)),
           fattori_provocativi: String(fd.get("fattori_provocativi") || "").trim(),
           fattori_allevianti: String(fd.get("fattori_allevianti") || "").trim()
+        },
+        insorgenza: {
+          tipo: String(fd.get("insorgenza_tipo") || "").trim(),
+          trauma: String(fd.get("insorgenza_trauma") || "").trim(),
+          note: String(fd.get("insorgenza_note") || "").trim()
         },
         dolore: {
           qualita: getAll("pain_quality"),

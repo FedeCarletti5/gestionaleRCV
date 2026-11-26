@@ -1010,27 +1010,68 @@ Deno.serve(async (req: Request) => {
         const dossier = await getPersonFullDossier(pid);
         await logAudit("EXPORT_PERSON_PDF", "people", pid, pid, "Generata vista PDF/stampa scheda persona", actor);
         const p = dossier.person;
-        const htmlDoc = `<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><title>Scheda — ${p.first_name} ${p.last_name}</title>
-        <style>body{font-family:-apple-system,sans-serif;color:#1e293b;margin:24px;line-height:1.45}.header{border-bottom:2px solid #0f766e;padding-bottom:12px;margin-bottom:20px;display:flex;justify-content:space-between}.section-card{border:1px solid #cbd5e1;border-radius:8px;padding:14px;margin-bottom:16px}table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:left}th{background:#f1f5f9}.print-btn{background:#0f766e;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:600}@media print{.no-print{display:none!important}}</style></head>
+        const escHtml = (v: unknown) =>
+          String(v ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+        const safeJson = (raw: unknown) => {
+          if (!raw) return {};
+          if (typeof raw === "object") return raw as Record<string, any>;
+          try {
+            return JSON.parse(String(raw)) || {};
+          } catch {
+            return {};
+          }
+        };
+        const epBlocks = (dossier.physio.episodes || [])
+          .map((ep: any) => {
+            const intake = safeJson(ep.intake_json);
+            const mot = intake.motivo || {};
+            const ins = intake.insorgenza || {};
+            const dol = intake.dolore || {};
+            const rf = intake.red_flags || {};
+            const scalesHtml = (ep.outcome_comparisons || [])
+              .map(
+                (c: any) =>
+                  `<tr><td>${escHtml(c.scale_name)}</td><td>${escHtml(c.initial_score ?? "-")}${escHtml(c.score_unit)} (${escHtml(c.initial_date || "-")})</td><td><strong>${escHtml(c.latest_score ?? "-")}${escHtml(c.score_unit)}</strong> (${escHtml(c.latest_date || "-")})</td><td>${c.numeric_delta !== null && c.numeric_delta !== undefined ? `${c.numeric_delta > 0 ? "+" : ""}${escHtml(c.numeric_delta)}${escHtml(c.score_unit)}` : "—"}</td></tr>`
+              )
+              .join("");
+            const notesHtml = (ep.notes || [])
+              .map(
+                (n: any) =>
+                  `<li><strong>${escHtml(n.note_date)}</strong>: ${escHtml([n.subjective_response, n.objective_findings, n.interventions_performed, n.plan_next_steps].filter(Boolean).join(" · "))}</li>`
+              )
+              .join("");
+            return `<div class="section-card">
+              <h2>${escHtml(ep.title)} ${ep.body_region ? `<span style="font-weight:400;color:#475569;font-size:14px;">— ${escHtml(ep.body_region)}${ep.laterality && ep.laterality !== "N/A" ? ` ${escHtml(ep.laterality)}` : ""}</span>` : ""}</h2>
+              <p style="font-size:12px;color:#64748b;margin-top:0;">Inizio: ${escHtml(ep.start_date || "-")} · Stato: ${escHtml(ep.status || "attivo")}</p>
+              ${mot.problema_principale || ep.chief_complaint ? `<p><strong>Motivo del consulto:</strong> ${escHtml(mot.problema_principale || ep.chief_complaint)}</p>` : ""}
+              ${ins.tipo || ins.trauma || ins.note ? `<p><strong>Insorgenza:</strong> ${escHtml([ins.tipo, ins.trauma ? `Trauma: ${ins.trauma}` : "", ins.note].filter(Boolean).join(" · "))}</p>` : ""}
+              ${mot.fattori_provocativi ? `<p><strong>Fattori provocativi:</strong> ${escHtml(mot.fattori_provocativi)}</p>` : ""}
+              ${mot.fattori_allevianti ? `<p><strong>Fattori allevianti:</strong> ${escHtml(mot.fattori_allevianti)}</p>` : ""}
+              ${(dol.qualita && dol.qualita.length) || dol.nprs ? `<p><strong>Dolore:</strong> ${escHtml((dol.qualita || []).join(", "))}${dol.nprs ? ` · NPRS ${escHtml(dol.nprs)}/10` : ""}</p>` : ""}
+              ${rf.selected && rf.selected.length ? `<p style="color:#b91c1c;"><strong>Red Flags presenti:</strong> ${escHtml(rf.selected.join(", "))}</p>` : ""}
+              ${scalesHtml ? `<h3>Scale e Outcomes</h3><table><thead><tr><th>Scala</th><th>Iniziale</th><th>Attuale</th><th>Delta</th></tr></thead><tbody>${scalesHtml}</tbody></table>` : ""}
+              ${notesHtml ? `<h3>Note di seduta</h3><ul>${notesHtml}</ul>` : ""}
+            </div>`;
+          })
+          .join("");
+        const htmlDoc = `<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><title>Report — ${escHtml(p.first_name)} ${escHtml(p.last_name)}</title>
+        <style>body{font-family:-apple-system,sans-serif;color:#1e293b;margin:24px;line-height:1.45}.header{border-bottom:2px solid #1e4976;padding-bottom:12px;margin-bottom:20px;display:flex;justify-content:space-between}.section-card{border:1px solid #cbd5e1;border-radius:8px;padding:14px;margin-bottom:16px;break-inside:avoid}h2{margin:0 0 8px;font-size:16px;color:#1e4976}h3{margin:12px 0 6px;font-size:13.5px}table{width:100%;border-collapse:collapse;margin-top:6px;font-size:12.5px}th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:left}th{background:#f1f5f9}.print-btn{background:#1e4976;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:600}@media print{.no-print{display:none!important}}</style></head>
         <body><div class="no-print" style="margin-bottom:16px;"><button class="print-btn" onclick="window.print()">Stampa / Salva come PDF</button></div>
-        <div class="header"><div><h1>Scheda Personale: ${p.first_name} ${p.last_name}</h1>
-        <p>Data di nascita: ${p.birth_date || "-"} | CF: ${p.tax_code || "-"} | Tel: ${p.phone || "-"} | Email: ${p.email || "-"}</p></div>
-        <div style="text-align:right;font-size:12px;color:#475569;">Esportato il ${nowRomeIso().slice(0, 16).replace("T", " ")}<br>Europe/Rome</div></div>
-        <div class="section-card"><h2>Limitazioni Funzionali Condivise</h2><ul>${
-          dossier.shared_limitations
-            .map((l: any) => `<li><strong>${l.title}</strong> (${l.laterality}): ${l.description} — <em>${l.source_type} (${l.recorded_date})</em></li>`)
-            .join("") || "<li>Nessuna limitazione attiva.</li>"
-        }</ul></div>
-        <div class="section-card"><h2>Episodi Fisioterapici (${dossier.physio.episodes.length})</h2>${
-          dossier.physio.episodes
-            .map((ep: any) => `<p><strong>${ep.title}</strong> (${ep.status}) — Inizio: ${ep.start_date} — ${ep.chief_complaint}</p>`)
-            .join("") || "<p>Nessun episodio registrato.</p>"
-        }</div>
-        <div class="section-card"><h2>Programmi Fitness (${dossier.fitness.programs.length})</h2>${
-          dossier.fitness.programs
-            .map((fp: any) => `<p><strong>${fp.title}</strong> (v${fp.version}, ${fp.status}) — Obiettivo: ${fp.goal}</p>`)
-            .join("") || "<p>Nessun programma registrato.</p>"
-        }</div></body></html>`;
+        <div class="header"><div><h1 style="margin:0 0 4px;font-size:20px;">Report Clinico: ${escHtml(p.first_name)} ${escHtml(p.last_name)}</h1>
+        <p style="margin:0;font-size:13px;color:#475569;">Data di nascita: ${escHtml(p.birth_date || "-")} | CF: ${escHtml(p.tax_code || "-")} | Tel: ${escHtml(p.phone || "-")} | Email: ${escHtml(p.email || "-")}</p></div>
+        <div style="text-align:right;font-size:12px;color:#475569;">Esportato il ${escHtml(nowRomeIso().slice(0, 16).replace("T", " "))}<br>Gestionale RCV</div></div>
+        ${epBlocks || `<div class="section-card"><p>Nessun episodio clinico registrato.</p></div>`}
+        ${
+          dossier.shared_limitations.length
+            ? `<div class="section-card"><h2>Limitazioni Funzionali Condivise</h2><ul>${dossier.shared_limitations
+                .map((l: any) => `<li><strong>${escHtml(l.title)}</strong> (${escHtml(l.laterality)}): ${escHtml(l.description)} — <em>${escHtml(l.source_type)} (${escHtml(l.recorded_date)})</em></li>`)
+                .join("")}</ul></div>`
+            : ""
+        }</body></html>`;
         return new Response(htmlDoc, {
           status: 200,
           headers: { ...CORS_HEADERS, "Content-Type": "text/html; charset=utf-8" },
@@ -1525,11 +1566,15 @@ Deno.serve(async (req: Request) => {
           if (!ep) throw new NotFoundError("Episodio clinico non trovato.");
           const nextTitle = (payload.episode_title || "").trim() || ep.title;
           const nextComplaint = motivoMain || ep.chief_complaint;
+          const nextBodyRegion = payload.body_region !== undefined ? String(payload.body_region || "").trim() : ep.body_region;
+          const nextLaterality = payload.laterality !== undefined ? (String(payload.laterality || "").trim() || "N/A") : ep.laterality;
           await sql`
             UPDATE public.physio_episodes
             SET intake_json = ${intakeJson},
                 title = ${nextTitle},
                 chief_complaint = ${nextComplaint},
+                body_region = ${nextBodyRegion},
+                laterality = ${nextLaterality},
                 updated_at = ${now}
             WHERE id = ${episodeId}
           `;
@@ -1597,8 +1642,8 @@ Deno.serve(async (req: Request) => {
       const personId = Number(payload.person_id);
       const title = (payload.title || "").trim();
       const chiefComplaint = (payload.chief_complaint || "").trim();
-      if (!title || !chiefComplaint) {
-        throw new ValidationError("Titolo dell'episodio clinico e motivo principale della consultazione sono obbligatori.");
+      if (!title) {
+        throw new ValidationError("Il titolo dell'episodio clinico è obbligatorio.");
       }
       const now = nowRomeIso();
       const startDate = payload.start_date || now.slice(0, 10);

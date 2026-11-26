@@ -1316,8 +1316,8 @@ def create_physio_episode(conn: sqlite3.Connection, payload: Dict[str, Any], act
     person_id = int(payload["person_id"])
     title = (payload.get("title") or "").strip()
     chief_complaint = (payload.get("chief_complaint") or "").strip()
-    if not title or not chief_complaint:
-        raise ValidationError("Titolo dell'episodio clinico e motivo principale della consultazione sono obbligatori.")
+    if not title:
+        raise ValidationError("Il titolo dell'episodio clinico è obbligatorio.")
 
     now = now_rome_iso()
     start_date = payload.get("start_date") or now[:10]
@@ -2428,9 +2428,19 @@ def save_person_anamnesis(
                     raise NotFoundError("Episodio clinico non trovato.")
                 next_title = (payload.get("episode_title") or "").strip() or ep["title"]
                 next_complaint = motivo_main or ep["chief_complaint"]
+                next_body_region = (
+                    str(payload.get("body_region") or "").strip()
+                    if "body_region" in payload and payload["body_region"] is not None
+                    else ep.get("body_region", "")
+                )
+                next_laterality = (
+                    (str(payload.get("laterality") or "").strip() or "N/A")
+                    if "laterality" in payload and payload["laterality"] is not None
+                    else ep.get("laterality", "N/A")
+                )
                 conn.execute(
-                    "UPDATE physio_episodes SET intake_json = ?, title = ?, chief_complaint = ?, updated_at = ? WHERE id = ?",
-                    (intake_json, next_title, next_complaint, now, episode_id),
+                    "UPDATE physio_episodes SET intake_json = ?, title = ?, chief_complaint = ?, body_region = ?, laterality = ?, updated_at = ? WHERE id = ?",
+                    (intake_json, next_title, next_complaint, next_body_region, next_laterality, now, episode_id),
                 )
             else:
                 ep_title = (payload.get("episode_title") or "").strip() or (motivo_main[:60] if motivo_main else "Scheda anamnestica")

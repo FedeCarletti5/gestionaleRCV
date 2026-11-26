@@ -110,6 +110,130 @@ export function matchEventToPerson(summary, people) {
   return null;
 }
 
+const AGENDA_NOISE_WORDS = new Set([
+  "fisio",
+  "fisioterapia",
+  "terapia",
+  "pt",
+  "personal",
+  "training",
+  "blvck",
+  "sc",
+  "duetto",
+  "seduta",
+  "singola",
+  "prima",
+  "visita",
+  "1a",
+  "valutazione",
+  "controllo",
+  "olona",
+  "milago",
+  "lavoro",
+  "lezione",
+  "trattamento",
+  "osteopatia",
+  "massaggio",
+  "riabilitazione",
+  "ginnastica",
+  "consulenza",
+  "appuntamento",
+  "online",
+  "studio",
+  "palestra",
+  "domicilio",
+  "nuovo",
+  "nuova",
+  "paziente",
+  "cliente",
+  "prova"
+]);
+
+function normalizeTokenKey(word) {
+  return String(word || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function smartCapitalizeWord(word) {
+  const s = String(word || "").trim();
+  if (!s) return "";
+  if (s === s.toLowerCase() || s === s.toUpperCase()) {
+    return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+  }
+  return s;
+}
+
+/**
+ * Estrae una bozza pulita Nome / Cognome / Percorso dal titolo di un evento Apple Calendar
+ * per precompilare "Nuova persona" con 1 clic, senza toccare o scrivere mai sul calendario.
+ */
+export function extractPersonDraftFromEvent(ev) {
+  const rawSummary = String(ev?.summary || "").trim();
+  const calName = String(ev?.calendar_name || "").trim();
+
+  // Rimuove eventuali note tra parentesi tonde/quadre
+  const withoutParens = rawSummary.replace(/\([^)]*\)|\[[^\]]*\]/g, " ");
+
+  // Rileva eventuale formato "Cognome, Nome"
+  let first_name = "";
+  let last_name = "";
+  const cleanTokens = (fragment) =>
+    String(fragment || "")
+      .replace(/[-–—:|/·]+/g, " ")
+      .split(/\s+/)
+      .map((w) => w.replace(/^[^A-Za-zÀ-ÖØ-öø-ÿ']+|[^A-Za-zÀ-ÖØ-öø-ÿ']+$/g, ""))
+      .filter((w) => {
+        const key = normalizeTokenKey(w);
+        return key.length >= 2 && !AGENDA_NOISE_WORDS.has(key);
+      })
+      .map(smartCapitalizeWord);
+
+  if (withoutParens.includes(",")) {
+    const [leftPart, rightPart] = withoutParens.split(",", 2);
+    const leftTokens = cleanTokens(leftPart);
+    const rightTokens = cleanTokens(rightPart);
+    if (leftTokens.length && rightTokens.length) {
+      last_name = leftTokens.join(" ");
+      first_name = rightTokens.join(" ");
+    }
+  }
+
+  if (!first_name && !last_name) {
+    const tokens = cleanTokens(withoutParens);
+    if (tokens.length === 1) {
+      first_name = tokens[0];
+    } else if (tokens.length >= 2) {
+      first_name = tokens[0];
+      last_name = tokens.slice(1).join(" ");
+    }
+  }
+
+  const lowCtx = normalizeMatchText(`${rawSummary} ${calName}`);
+  const mentionsPt = /\b(pt|personal|training|blvck|duetto|sc|conditioning|palestra)\b/.test(lowCtx);
+  const mentionsFisio = /\b(fisio|fisioterapia|terapia|valutazione|riabilitazione|visita|osteopatia)\b/.test(lowCtx);
+
+  let physio_active = true;
+  let fitness_active = false;
+  if (mentionsPt && !mentionsFisio) {
+    physio_active = false;
+    fitness_active = true;
+  } else if (mentionsPt && mentionsFisio) {
+    physio_active = true;
+    fitness_active = true;
+  }
+
+  return {
+    first_name,
+    last_name,
+    physio_active,
+    fitness_active,
+    source_label: [rawSummary, calName].filter(Boolean).join(" · ")
+  };
+}
+
 function pickBestPackageForEvent(summary, calendarName, personPackages, helpers) {
   if (!personPackages || !personPackages.length) return null;
   const active = personPackages.filter((k) => k.status === "attivo");
@@ -531,8 +655,10 @@ export async function renderAgendaView(container, ctx) {
   }).format(new Date());
 
   const matchedPkgMap = new Map();
+  const unmatchedEvMap = new Map();
 
   const paintAgendaEvents = () => {
+    unmatchedEvMap.clear();
     const activeCalFilter = state.agendaCalFilter || "tutti";
     const events =
       activeCalFilter === "tutti"
@@ -555,6 +681,7 @@ export async function renderAgendaView(container, ctx) {
       `
       : "";
 
+    let unmatchedCounter = 0;
     const renderEventRow = (ev) => {
       const person = matchEventToPerson(ev.summary, people);
       const pkg = person ? pickBestPackageForEvent(ev.summary, ev.calendar_name, packagesByPerson.get(person.id) || [], helpers) : null;
@@ -600,10 +727,19 @@ export async function renderAgendaView(container, ctx) {
           shortcutHtml = `
             <div class="agenda-shortcut-group">
               <span class="tag" style="color:var(--text-muted);">Nessun pacchetto</span>
+              <button type="button" class="btn btn-xs btn-secondary" data-agenda-new-pkg="${person.id}">+ Pacchetto</button>
               <button type="button" class="btn btn-xs btn-ghost" data-open-person="${person.id}" data-person-tab="pacchetti">Scheda</button>
             </div>
           `;
         }
+      } else {
+        const key = String(++unmatchedCounter);
+        unmatchedEvMap.set(key, ev);
+        shortcutHtml = `
+          <div class="agenda-shortcut-group">
+            <button type="button" class="btn btn-xs btn-secondary" data-agenda-create-person="${key}" title="Crea una nuova anagrafica da questo evento">+ Crea scheda</button>
+          </div>
+        `;
       }
 
       const calSourceTag =
@@ -764,6 +900,23 @@ export async function renderAgendaView(container, ctx) {
           const pkgId = Number(btn.getAttribute("data-agenda-renew"));
           const pkg = matchedPkgMap.get(pkgId);
           if (pkg) ctx.showRenewPackageModal(pkg);
+        });
+      });
+
+      bodyViewport.querySelectorAll("[data-agenda-new-pkg]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const personId = Number(btn.getAttribute("data-agenda-new-pkg"));
+          if (personId) ctx.showNewPackageModal?.(personId);
+        });
+      });
+
+      bodyViewport.querySelectorAll("[data-agenda-create-person]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const key = btn.getAttribute("data-agenda-create-person");
+          const ev = unmatchedEvMap.get(key);
+          if (!ev) return;
+          const draft = extractPersonDraftFromEvent(ev);
+          ctx.showNewPersonModal?.(draft, { stayInAgendaOption: true });
         });
       });
 

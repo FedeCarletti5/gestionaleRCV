@@ -3,16 +3,17 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js?v=21";
+} from "./body_map.js?v=22";
 import {
   PCS_ITEMS,
   TSK13_ITEMS,
   computeScaleBreakdown,
   buildClinicalNoteFromBreakdown,
   parseTallyScalesCsv
-} from "./scales.js?v=21";
-import { renderAnamnesisTab } from "./anamnesis.js?v=21";
-import { renderAgendaView, showAppleCalendarConfigModal } from "./agenda.js?v=21";
+} from "./scales.js?v=22";
+import { renderAnamnesisTab } from "./anamnesis.js?v=22";
+import { renderAgendaView, showAppleCalendarConfigModal } from "./agenda.js?v=22";
+import { showClinicalReportModal } from "./report.js?v=22";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
@@ -311,6 +312,8 @@ function getAgendaContext() {
     refreshCurrentView,
     bindCommonActionButtons,
     showRenewPackageModal,
+    showNewPersonModal,
+    showNewPackageModal,
     helpers: {
       todayRomeStr,
       getSessionCounterTone,
@@ -528,11 +531,41 @@ async function renderPeopleListView(container) {
 
 async function renderPersonDossierView(container, personId) {
   let dossier = state.dossierCache.get(personId);
+  const promises = [];
   if (!dossier) {
-    dossier = await apiFetch(`/api/people/${personId}`);
-    state.dossierCache.set(personId, dossier);
+    promises.push(
+      apiFetch(`/api/people/${personId}`).then((d) => {
+        dossier = d;
+        state.dossierCache.set(personId, dossier);
+      })
+    );
   }
+  if (!state.allPeopleSearchCache) {
+    promises.push(
+      apiFetch("/api/people?status=attivo")
+        .then((d) => {
+          state.allPeopleSearchCache = d.people || [];
+        })
+        .catch(() => {})
+    );
+  }
+  if (promises.length) await Promise.all(promises);
+
   const p = dossier.person;
+  const switcherMap = new Map();
+  for (const item of state.allPeopleSearchCache || []) {
+    switcherMap.set(item.id, item);
+  }
+  if (!switcherMap.has(p.id)) switcherMap.set(p.id, p);
+  const switcherPeople = Array.from(switcherMap.values()).sort((a, b) => {
+    const aArch = a.status === "archiviato" ? 1 : 0;
+    const bArch = b.status === "archiviato" ? 1 : 0;
+    if (aArch !== bArch) return aArch - bArch;
+    const aName = `${a.last_name || ""} ${a.first_name || ""}`.trim();
+    const bName = `${b.last_name || ""} ${b.first_name || ""}`.trim();
+    return aName.localeCompare(bName, "it", { sensitivity: "base" });
+  });
+
   const activePackages = (dossier.packages || []).filter((k) => k.status === "attivo");
   const activeFixedPackages = activePackages.filter((k) => !isOpenSinglePackage(k));
   const activeOpenSingles = activePackages.filter((k) => isOpenSinglePackage(k));
@@ -583,11 +616,26 @@ async function renderPersonDossierView(container, personId) {
     metaParts.push(`${lifetime.total} ${lifetime.total === 1 ? "seduta svolta in totale" : "sedute svolte in totale"}`);
   }
 
+  const quickSwitcherHtml =
+    switcherPeople.length > 1
+      ? `<select class="form-control form-control-sm dossier-person-select sensitive-data" id="dossierPersonSwitcher" aria-label="Passa rapidamente a un'altra persona" title="Passa rapidamente a un'altra persona">
+          ${switcherPeople
+            .map(
+              (sp) =>
+                `<option value="${sp.id}" ${sp.id === p.id ? "selected" : ""}>${esc(sp.last_name)} ${esc(sp.first_name)}${sp.status === "archiviato" ? " (archiviato)" : ""}</option>`
+            )
+            .join("")}
+        </select>`
+      : "";
+
   container.innerHTML = `
     <div class="dossier-top">
-      <button class="btn btn-sm btn-ghost" id="backToPeopleListBtn">${ico("back")} <span>Persone</span></button>
+      <div class="dossier-top-left">
+        <button class="btn btn-sm btn-ghost" id="backToPeopleListBtn">${ico("back")} <span>Persone</span></button>
+        ${quickSwitcherHtml}
+      </div>
       <div style="display:flex; gap:4px; flex-wrap:wrap;">
-        <a class="btn btn-sm btn-ghost" href="${esc(buildAuthUrl(`/api/people/${p.id}/export-pdf`))}" target="_blank">${ico("printer")} <span>PDF</span></a>
+        <button type="button" class="btn btn-sm btn-ghost" id="openClinicalReportBtn">${ico("printer")} <span>Report PDF</span></button>
         <a class="btn btn-sm btn-ghost" href="${esc(buildAuthUrl(`/api/people/${p.id}/export.json`))}" target="_blank">${ico("download")} <span>JSON</span></a>
         <button class="btn btn-sm btn-danger-ghost" id="deletePersonBtn">${ico("trash")} <span>Elimina</span></button>
       </div>
@@ -634,13 +682,55 @@ async function renderPersonDossierView(container, personId) {
     <div id="personSubtabViewport"></div>
   `;
 
+  const confirmLeaveIfAnamDirty = () => {
+    const dirtyEl = document.getElementById("anamDirtyBadge");
+    if (dirtyEl && dirtyEl.style.display !== "none") {
+      return window.confirm("Ci sono modifiche non salvate nell'anamnesi. Continuare senza salvare?");
+    }
+    return true;
+  };
+
   document.getElementById("backToPeopleListBtn")?.addEventListener("click", async () => {
+    if (!confirmLeaveIfAnamDirty()) return;
     state.selectedPersonId = null;
     state.profileEditMode = false;
     await renderPeopleListView(container);
   });
 
+  const switcherSel = document.getElementById("dossierPersonSwitcher");
+  switcherSel?.addEventListener("change", async () => {
+    const nextId = Number(switcherSel.value);
+    if (!nextId || nextId === p.id) return;
+    if (!confirmLeaveIfAnamDirty()) {
+      switcherSel.value = String(p.id);
+      return;
+    }
+    state.selectedPersonId = nextId;
+    state.selectedEpisodeId = null;
+    state.selectedEvalId = null;
+    state.profileEditMode = false;
+    await renderPersonDossierView(container, nextId);
+  });
+
+  document.getElementById("openClinicalReportBtn")?.addEventListener("click", () => {
+    const dirtyEl = document.getElementById("anamDirtyBadge");
+    if (dirtyEl && dirtyEl.style.display !== "none") {
+      if (!window.confirm("Hai modifiche non salvate nell'anamnesi: il report userà l'ultimo salvataggio. Aprire comunque?")) {
+        return;
+      }
+    }
+    showClinicalReportModal(dossier, {
+      selectedEpisodeId: state.selectedEpisodeId,
+      openModal,
+      closeModal,
+      formatDateIt,
+      calcAge,
+      defaultClinicianName: state.user?.full_name || ""
+    });
+  });
+
   document.getElementById("headerGoPackagesBtn")?.addEventListener("click", async () => {
+    if (!confirmLeaveIfAnamDirty()) return;
     state.selectedPersonTab = "pacchetti";
     await renderPersonDossierView(container, p.id);
   });
@@ -655,7 +745,10 @@ async function renderPersonDossierView(container, personId) {
 
   container.querySelectorAll("[data-person-subtab]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      state.selectedPersonTab = btn.getAttribute("data-person-subtab");
+      const nextTab = btn.getAttribute("data-person-subtab");
+      if (nextTab === state.selectedPersonTab) return;
+      if (!confirmLeaveIfAnamDirty()) return;
+      state.selectedPersonTab = nextTab;
       state.profileEditMode = false;
       await renderPersonDossierView(container, p.id);
     });
@@ -1026,11 +1119,16 @@ function renderPersonTabFisio(viewport, dossier) {
         </div>
       </div>
       <div style="margin-top:8px; font-size:13px; color:var(--text-secondary);" class="sensitive-data">
-        ${activeEp.body_region ? `<span class="tag" style="margin-right:6px;">${esc(activeEp.body_region)}${activeEp.laterality ? ` ${esc(activeEp.laterality)}` : ""}</span>` : ""}
+        ${activeEp.body_region ? `<span class="tag" style="margin-right:6px;">${esc(activeEp.body_region)}${activeEp.laterality && activeEp.laterality !== "N/A" ? ` ${esc(activeEp.laterality)}` : ""}</span>` : ""}
         <span>${esc(activeEp.chief_complaint || "")}</span>
         ${activeEp.reassessment_due_date ? `<span style="color:var(--text-muted);"> · Rivalutazione: ${formatDateIt(activeEp.reassessment_due_date)}</span>` : ""}
         ${activeEp.closure_summary ? `<div style="margin-top:4px; color:var(--text-muted);">Chiusura: ${esc(activeEp.closure_outcome)} — ${esc(activeEp.closure_summary)}</div>` : ""}
       </div>
+      ${
+        activeEp.created_at
+          ? `<div class="anam-ep-meta num" style="margin-top:6px;">Creato il ${esc(formatRomeDateTime(activeEp.created_at))}${activeEp.updated_at && formatRomeDateTime(activeEp.updated_at) !== formatRomeDateTime(activeEp.created_at) ? ` · Ultima modifica ${esc(formatRomeDateTime(activeEp.updated_at))}` : ""}</div>`
+          : ""
+      }
     </div>
 
     <!-- 1. SCALE E QUESTIONARI -->
@@ -2772,16 +2870,40 @@ function bindCommonActionButtons(root) {
   });
 }
 
-function showNewPersonModal() {
+function showNewPersonModal(prefill = null, options = {}) {
+  const pf = prefill || {};
+  const fromAgenda = Boolean(options.stayInAgendaOption);
+  const fisioChecked = pf.physio_active !== undefined ? Boolean(pf.physio_active) : true;
+  const ptChecked = pf.fitness_active !== undefined ? Boolean(pf.fitness_active) : false;
+
   openModal(`
     <h2 class="modal-title">Nuova persona</h2>
+    ${
+      pf.source_label
+        ? `<div class="agenda-prefill-banner">
+            <span>Da Agenda: <strong>${esc(pf.source_label)}</strong></span>
+            <button type="button" class="btn btn-xs btn-secondary" id="swapNewPersonNamesBtn" title="Scambia Nome e Cognome">Inverti Nome ↔ Cognome</button>
+          </div>`
+        : ""
+    }
     <form id="createPersonModalForm">
       <div class="grid-2">
-        <div class="form-group"><label class="form-label">Nome *</label><input class="form-control" name="first_name" required /></div>
-        <div class="form-group"><label class="form-label">Cognome *</label><input class="form-control" name="last_name" required /></div>
+        <div class="form-group"><label class="form-label">Nome *</label><input class="form-control" id="newPersonFirstName" name="first_name" value="${esc(pf.first_name || "")}" required /></div>
+        <div class="form-group"><label class="form-label">Cognome *</label><input class="form-control" id="newPersonLastName" name="last_name" value="${esc(pf.last_name || "")}" required /></div>
       </div>
-      <div class="grid-3">
+      <div class="grid-2">
         <div class="form-group"><label class="form-label">Data di nascita</label><input class="form-control" type="date" name="birth_date" /></div>
+        <div class="form-group">
+          <label class="form-label">Genere</label>
+          <select class="form-control" name="gender">
+            <option value="">—</option>
+            <option value="Uomo">Uomo</option>
+            <option value="Donna">Donna</option>
+            <option value="Altro">Altro</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid-2">
         <div class="form-group"><label class="form-label">Telefono</label><input class="form-control" name="phone" /></div>
         <div class="form-group"><label class="form-label">Email</label><input class="form-control" type="email" name="email" /></div>
       </div>
@@ -2793,8 +2915,8 @@ function showNewPersonModal() {
         <div class="form-group">
           <label class="form-label">Percorso</label>
           <div style="display:flex; gap:18px; padding-top:6px;">
-            <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="physio_active" checked /> Fisio</label>
-            <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="fitness_active" /> PT</label>
+            <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="physio_active" ${fisioChecked ? "checked" : ""} /> Fisio</label>
+            <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" name="fitness_active" ${ptChecked ? "checked" : ""} /> PT</label>
           </div>
         </div>
         <div class="form-group">
@@ -2807,13 +2929,35 @@ function showNewPersonModal() {
       <input type="hidden" name="confirm_duplicate_override" id="dupOverrideInput" value="" />
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelModalBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Crea scheda</button>
+        ${
+          fromAgenda
+            ? `<button type="submit" class="btn btn-secondary" data-after-create="open">Crea e apri scheda</button>
+               <button type="submit" class="btn btn-primary" data-after-create="agenda">Crea e resta in Agenda</button>`
+            : `<button type="submit" class="btn btn-primary" data-after-create="open">Crea scheda</button>`
+        }
       </div>
     </form>
   `);
+
+  const fnInput = document.getElementById("newPersonFirstName");
+  const lnInput = document.getElementById("newPersonLastName");
+  if (pf.first_name && !pf.last_name) {
+    lnInput?.focus();
+  } else if (!pf.first_name) {
+    fnInput?.focus();
+  }
+
+  document.getElementById("swapNewPersonNamesBtn")?.addEventListener("click", () => {
+    if (!fnInput || !lnInput) return;
+    const tmp = fnInput.value;
+    fnInput.value = lnInput.value;
+    lnInput.value = tmp;
+  });
+
   document.getElementById("cancelModalBtn")?.addEventListener("click", closeModal);
   document.getElementById("createPersonModalForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
+    const afterMode = e.submitter?.getAttribute("data-after-create") || (fromAgenda ? "agenda" : "open");
     const fd = new FormData(e.target);
     try {
       const created = await apiFetch("/api/people", {
@@ -2822,6 +2966,7 @@ function showNewPersonModal() {
           first_name: fd.get("first_name"),
           last_name: fd.get("last_name"),
           birth_date: fd.get("birth_date"),
+          gender: fd.get("gender"),
           phone: fd.get("phone"),
           email: fd.get("email"),
           current_pain_notes: fd.get("current_pain_notes"),
@@ -2834,14 +2979,18 @@ function showNewPersonModal() {
         }
       });
       closeModal();
-      await navigateTo("people", { personId: created.id, personTab: "profilo" });
+      if (afterMode === "agenda" && state.currentNav === "agenda") {
+        await refreshCurrentView();
+      } else {
+        await navigateTo("people", { personId: created.id, personTab: "profilo" });
+      }
     } catch (err) {
       if (err.details?.potential_duplicates) {
         const box = document.getElementById("dupWarningBox");
         box.style.display = "block";
         box.innerHTML = `<strong>Possibile duplicato:</strong> ${err.details.potential_duplicates
           .map((d) => `${esc(d.first_name)} ${esc(d.last_name)} (${esc((d.duplicate_reasons || []).join(", "))})`)
-          .join("; ")}. Premi di nuovo "Crea scheda" per confermare.`;
+          .join("; ")}. Premi di nuovo per confermare.`;
         document.getElementById("dupOverrideInput").value = "1";
       } else {
         alert(err.message);
@@ -3349,58 +3498,73 @@ function showNewPhysioEpisodeModal(personId) {
   openModal(`
     <h2 class="modal-title">Nuovo episodio clinico</h2>
     <form id="newEpisodeForm">
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Titolo *</label><input class="form-control" name="title" placeholder="Es. Spalla destra / Lombalgia" required /></div>
-        <div class="form-group">
-          <label class="form-label">Distretto e lato</label>
-          <div style="display:flex; gap:6px;">
-            <input class="form-control" name="body_region" placeholder="Es. Spalla" />
-            <select class="form-control" name="laterality" style="width:110px;">
-              <option value="DX">DX</option>
-              <option value="SX">SX</option>
-              <option value="Bilaterale">Bilaterale</option>
-              <option value="Centrale">Centrale</option>
-            </select>
-          </div>
+      <div class="form-group">
+        <label class="form-label" for="quickEpTitleInput">Nome episodio clinico *</label>
+        <input class="form-control" id="quickEpTitleInput" name="title" placeholder="Es. Spalla destra, Lombalgia acuta, Distorsione caviglia..." required />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Tag / Distretto e lato (opzionale)</label>
+        <div style="display:flex; gap:8px;">
+          <input class="form-control" name="body_region" placeholder="Es. Spalla, Rachide lombare, Ginocchio..." />
+          <select class="form-control" name="laterality" style="width:120px;">
+            <option value="N/A">Lato —</option>
+            <option value="DX">DX</option>
+            <option value="SX">SX</option>
+            <option value="Bilaterale">Bilaterale</option>
+            <option value="Centrale">Centrale</option>
+          </select>
         </div>
       </div>
-      <div class="form-group"><label class="form-label">Problematica / Motivo *</label><input class="form-control" name="chief_complaint" required /></div>
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Data inizio</label><input class="form-control" type="date" name="start_date" value="${todayRomeStr()}" required /></div>
-        <div class="form-group"><label class="form-label">Rivalutazione prevista</label><input class="form-control" type="date" name="reassessment_due_date" /></div>
-      </div>
-      <div class="grid-2">
-        <div class="form-group"><label class="form-label">Obiettivi persona</label><textarea class="form-control" name="patient_goals" rows="2"></textarea></div>
-        <div class="form-group"><label class="form-label">Obiettivi clinici</label><textarea class="form-control" name="therapist_goals" rows="2"></textarea></div>
-      </div>
+      <details class="inline-details" style="margin-bottom:14px;">
+        <summary>Dettagli opzionali (motivo, date, obiettivi)</summary>
+        <div style="margin-top:10px;">
+          <div class="form-group"><label class="form-label">Problematica / Motivo</label><input class="form-control" name="chief_complaint" placeholder="Puoi compilarlo anche dopo dentro Anamnesi..." /></div>
+          <div class="grid-2">
+            <div class="form-group"><label class="form-label">Data inizio</label><input class="form-control" type="date" name="start_date" value="${todayRomeStr()}" /></div>
+            <div class="form-group"><label class="form-label">Rivalutazione prevista</label><input class="form-control" type="date" name="reassessment_due_date" /></div>
+          </div>
+          <div class="grid-2">
+            <div class="form-group" style="margin-bottom:0;"><label class="form-label">Obiettivi persona</label><textarea class="form-control" name="patient_goals" rows="2"></textarea></div>
+            <div class="form-group" style="margin-bottom:0;"><label class="form-label">Obiettivi clinici</label><textarea class="form-control" name="therapist_goals" rows="2"></textarea></div>
+          </div>
+        </div>
+      </details>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="cancelEpBtn">Annulla</button>
-        <button type="submit" class="btn btn-primary">Crea episodio</button>
+        <button type="submit" class="btn btn-primary" id="submitQuickEpBtn">Crea</button>
       </div>
     </form>
   `);
+  document.getElementById("quickEpTitleInput")?.focus();
   document.getElementById("cancelEpBtn")?.addEventListener("click", closeModal);
   document.getElementById("newEpisodeForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
+    const submitBtn = document.getElementById("submitQuickEpBtn");
+    if (submitBtn) submitBtn.disabled = true;
     const fd = new FormData(e.target);
-    const ep = await apiFetch("/api/physio/episodes", {
-      method: "POST",
-      body: {
-        person_id: personId,
-        title: fd.get("title"),
-        body_region: fd.get("body_region"),
-        laterality: fd.get("laterality"),
-        chief_complaint: fd.get("chief_complaint"),
-        start_date: fd.get("start_date"),
-        reassessment_due_date: fd.get("reassessment_due_date"),
-        patient_goals: fd.get("patient_goals"),
-        therapist_goals: fd.get("therapist_goals"),
-        init_default_flags: true
-      }
-    });
-    state.selectedEpisodeId = ep.id;
-    closeModal();
-    await refreshCurrentView();
+    try {
+      const ep = await apiFetch("/api/physio/episodes", {
+        method: "POST",
+        body: {
+          person_id: personId,
+          title: fd.get("title"),
+          body_region: fd.get("body_region") || "",
+          laterality: fd.get("laterality") || "N/A",
+          chief_complaint: fd.get("chief_complaint") || "",
+          start_date: fd.get("start_date") || todayRomeStr(),
+          reassessment_due_date: fd.get("reassessment_due_date") || null,
+          patient_goals: fd.get("patient_goals") || "",
+          therapist_goals: fd.get("therapist_goals") || "",
+          init_default_flags: true
+        }
+      });
+      state.selectedEpisodeId = ep.id;
+      closeModal();
+      await refreshCurrentView();
+    } catch (err) {
+      if (submitBtn) submitBtn.disabled = false;
+      alert(err.message || "Impossibile creare l'episodio clinico.");
+    }
   });
 }
 
