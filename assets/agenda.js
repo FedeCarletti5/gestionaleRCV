@@ -110,16 +110,16 @@ export function matchEventToPerson(summary, people) {
   return null;
 }
 
-function pickBestPackageForEvent(summary, personPackages, helpers) {
+function pickBestPackageForEvent(summary, calendarName, personPackages, helpers) {
   if (!personPackages || !personPackages.length) return null;
   const active = personPackages.filter((k) => k.status === "attivo");
   if (active.length === 1) return active[0];
   if (active.length > 1) {
-    const low = normalizeMatchText(summary);
+    const low = normalizeMatchText(`${summary || ""} ${calendarName || ""}`);
     const hinted = active.find((k) => {
       const cat = helpers.inferPackageCategory(k);
-      if (cat.key === "fisio" && (low.includes(" fisio ") || low.includes(" fisioterapia ") || low.includes(" terapia "))) return true;
       if (cat.key === "blvck" && low.includes(" blvck ")) return true;
+      if (cat.key === "fisio" && (low.includes(" fisio ") || low.includes(" fisioterapia ") || low.includes(" terapia "))) return true;
       if (cat.key === "pt_duetto" && low.includes(" duetto ")) return true;
       if (cat.key === "pt_sc" && (low.includes(" sc ") || low.includes(" conditioning "))) return true;
       if (cat.key === "pt_normale" && low.includes(" pt ")) return true;
@@ -127,7 +127,6 @@ function pickBestPackageForEvent(summary, personPackages, helpers) {
     });
     return hinted || active[0];
   }
-  // Nessun attivo: se c'è un pacchetto esaurito recente proponiamo Rinnova
   const exhausted = personPackages.find((k) => k.status === "esaurito" && !helpers.isOpenSinglePackage(k));
   return exhausted || null;
 }
@@ -180,7 +179,8 @@ function renderSetupFormMarkup(existingCfg = null, inline = false) {
     </form>
 
     <div id="calPickerStep" style="display:none; margin-top:16px; padding-top:14px; border-top:1px solid var(--border);">
-      <div style="font-size:13px; font-weight:600; color:var(--text); margin-bottom:8px;">Seleziona il calendario da rispecchiare (sola lettura):</div>
+      <div style="font-size:13px; font-weight:600; color:var(--text); margin-bottom:4px;">Seleziona i calendari da rispecchiare (puoi sceglierne più di uno):</div>
+      <div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">Clicca sui calendari per selezionarli o deselezionarli (es. Lavoro Olona, Lavoro Milago, BlVck).</div>
       <div id="calListChoices" class="pkg-preset-grid" style="margin-bottom:12px;"></div>
       <div style="display:flex; justify-content:flex-end; gap:8px;">
         <button type="button" class="btn btn-primary" id="calSaveChoiceBtn">Salva e sincronizza</button>
@@ -200,7 +200,7 @@ function bindSetupFormHandlers(root, existingCfg, ctx, { onSaved, onDisconnected
   const saveBtn = root.querySelector("#calSaveChoiceBtn");
 
   let discovered = [];
-  let selectedCal = null;
+  const selectedUrls = new Set();
 
   const showErr = (msg) => {
     if (!errBox) return;
@@ -215,13 +215,25 @@ function bindSetupFormHandlers(root, existingCfg, ctx, { onSaved, onDisconnected
     try {
       await ctx.apiFetch("/api/calendar/config", { method: "DELETE" });
       if (ctx.state.user?.settings) {
-        ctx.state.user.settings.apple_caldav = { configured: false, apple_id: "", calendar_name: "", calendar_color: "#1e4976" };
+        ctx.state.user.settings.apple_caldav = { configured: false, apple_id: "", calendars: [], calendar_name: "", calendar_color: "#1e4976" };
       }
       onDisconnected?.();
     } catch (err) {
       showErr(err.message);
     }
   });
+
+  const syncSaveBtnLabel = () => {
+    if (!saveBtn) return;
+    const count = selectedUrls.size;
+    saveBtn.disabled = count === 0;
+    saveBtn.textContent =
+      count === 0
+        ? "Seleziona almeno un calendario"
+        : count === 1
+          ? "Salva 1 calendario e sincronizza"
+          : `Salva ${count} calendari e sincronizza`;
+  };
 
   form?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -249,32 +261,57 @@ function bindSetupFormHandlers(root, existingCfg, ctx, { onSaved, onDisconnected
         return;
       }
 
-      // Preseleziona automaticamente il calendario attuale oppure "Lavoro" se presente
-      selectedCal =
-        discovered.find((c) => existingCfg?.calendar_name && c.name.toLowerCase() === existingCfg.calendar_name.toLowerCase()) ||
-        discovered.find((c) => c.name.toLowerCase().includes("lavoro")) ||
-        discovered[0];
+      selectedUrls.clear();
+      const prevList = Array.isArray(existingCfg?.calendars) ? existingCfg.calendars : [];
+      const prevUrls = new Set(prevList.map((x) => x.url));
+      const prevNames = new Set(prevList.map((x) => String(x.name || "").toLowerCase()));
+
+      for (const c of discovered) {
+        if (prevUrls.has(c.url) || prevNames.has(c.name.toLowerCase())) {
+          selectedUrls.add(c.url);
+        }
+      }
+      if (selectedUrls.size === 0) {
+        // Prima configurazione: preseleziona automaticamente eventuali calendari lavoro / olona / milago / blvck
+        for (const c of discovered) {
+          const low = c.name.toLowerCase();
+          if (low.includes("lavoro") || low.includes("olona") || low.includes("milago") || low.includes("blvck")) {
+            selectedUrls.add(c.url);
+          }
+        }
+      }
+      if (selectedUrls.size === 0 && discovered[0]) {
+        selectedUrls.add(discovered[0].url);
+      }
 
       const paintChoices = () => {
         if (!listBox) return;
         listBox.innerHTML = discovered
-          .map(
-            (c, idx) => `
-            <button type="button" class="pkg-preset-card ${selectedCal && c.url === selectedCal.url ? "active" : ""}" data-cal-idx="${idx}">
-              <span class="pkg-preset-title" style="display:flex; align-items:center; gap:7px;">
-                <span class="cal-dot" style="background:${esc(c.color || "#1e4976")};"></span>
-                <span>${esc(c.name)}</span>
+          .map((c, idx) => {
+            const isSelected = selectedUrls.has(c.url);
+            return `
+            <button type="button" class="pkg-preset-card ${isSelected ? "active" : ""}" data-cal-idx="${idx}">
+              <span class="pkg-preset-title" style="display:flex; align-items:center; gap:7px; width:100%; justify-content:space-between;">
+                <span style="display:inline-flex; align-items:center; gap:7px;">
+                  <span class="cal-dot" style="background:${esc(c.color || "#1e4976")};"></span>
+                  <span>${esc(c.name)}</span>
+                </span>
+                <span style="font-size:11px; color:${isSelected ? "var(--accent)" : "var(--text-muted)"};">${isSelected ? "Selezionato" : ""}</span>
               </span>
               <span class="pkg-preset-sub">Calendario iCloud</span>
-            </button>`
-          )
+            </button>`;
+          })
           .join("");
         listBox.querySelectorAll("[data-cal-idx]").forEach((btn) => {
           btn.addEventListener("click", () => {
-            selectedCal = discovered[Number(btn.getAttribute("data-cal-idx"))];
+            const cal = discovered[Number(btn.getAttribute("data-cal-idx"))];
+            if (!cal) return;
+            if (selectedUrls.has(cal.url)) selectedUrls.delete(cal.url);
+            else selectedUrls.add(cal.url);
             paintChoices();
           });
         });
+        syncSaveBtnLabel();
       };
 
       paintChoices();
@@ -290,7 +327,8 @@ function bindSetupFormHandlers(root, existingCfg, ctx, { onSaved, onDisconnected
   });
 
   saveBtn?.addEventListener("click", async () => {
-    if (!selectedCal) return;
+    const chosen = discovered.filter((c) => selectedUrls.has(c.url));
+    if (!chosen.length) return;
     showErr("");
     saveBtn.disabled = true;
     saveBtn.textContent = "Salvataggio...";
@@ -300,20 +338,18 @@ function bindSetupFormHandlers(root, existingCfg, ctx, { onSaved, onDisconnected
         body: {
           apple_id: (appleIdInp?.value || "").trim(),
           app_password: (passInp?.value || "").trim(),
-          calendar_url: selectedCal.url,
-          calendar_name: selectedCal.name,
-          calendar_color: selectedCal.color || "#1e4976"
+          calendars: chosen.map((c) => ({ url: c.url, name: c.name, color: c.color || "#1e4976" }))
         }
       });
       if (ctx.state.user) {
         ctx.state.user.settings = ctx.state.user.settings || {};
         ctx.state.user.settings.apple_caldav = saved;
       }
+      ctx.state.agendaCalFilter = "tutti";
       onSaved?.(saved);
     } catch (err) {
       showErr(err.message || "Errore nel salvataggio della configurazione.");
-      saveBtn.disabled = false;
-      saveBtn.textContent = "Salva e sincronizza";
+      syncSaveBtnLabel();
     }
   });
 }
@@ -465,11 +501,16 @@ export async function renderAgendaView(container, ctx) {
     return;
   }
 
-  const calColor = calResp.calendar_color || "#1e4976";
-  const calName = calResp.calendar_name || "Apple Calendar";
+  const connectedCals = Array.isArray(calResp.calendars) && calResp.calendars.length
+    ? calResp.calendars
+    : [{ name: calResp.calendar_name || "Apple Calendar", color: calResp.calendar_color || "#1e4976" }];
+  const hasMultipleCals = connectedCals.length > 1;
+  const calFilter = state.agendaCalFilter || "tutti";
   if (calBadge) {
     calBadge.style.display = "inline-flex";
-    calBadge.innerHTML = `<span class="cal-dot" style="background:${esc(calColor)};"></span><span>${esc(calName)}</span>`;
+    calBadge.innerHTML = hasMultipleCals
+      ? `<span>${connectedCals.length} calendari Apple</span>`
+      : `<span class="cal-dot" style="background:${esc(connectedCals[0].color)};"></span><span>${esc(connectedCals[0].name)}</span>`;
   }
 
   const people = state.allPeopleSearchCache || [];
@@ -480,7 +521,7 @@ export async function renderAgendaView(container, ctx) {
     packagesByPerson.get(pkg.person_id).push(pkg);
   }
 
-  const events = calResp.events || [];
+  const allEvents = calResp.events || [];
   const syncedHhMm = calResp.synced_at ? String(calResp.synced_at).slice(11, 16) : "";
   const nowHm = new Intl.DateTimeFormat("it-IT", {
     timeZone: "Europe/Rome",
@@ -491,209 +532,244 @@ export async function renderAgendaView(container, ctx) {
 
   const matchedPkgMap = new Map();
 
-  const renderEventRow = (ev) => {
-    const person = matchEventToPerson(ev.summary, people);
-    const pkg = person ? pickBestPackageForEvent(ev.summary, packagesByPerson.get(person.id) || [], helpers) : null;
-    if (pkg) matchedPkgMap.set(pkg.id, pkg);
+  const paintAgendaEvents = () => {
+    const activeCalFilter = state.agendaCalFilter || "tutti";
+    const events =
+      activeCalFilter === "tutti"
+        ? allEvents
+        : allEvents.filter((ev) => (ev.calendar_name || "") === activeCalFilter);
 
-    const isDoneNow = state.agendaDoneUids?.has(ev.uid);
-    const isOngoing = !ev.all_day && ev.date === todayStr && ev.start_time <= nowHm && ev.end_time > nowHm;
+    const calFilterBarHtml = hasMultipleCals
+      ? `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+          <div class="segmented" role="group" aria-label="Filtro calendario" style="flex-wrap:wrap;">
+            <button type="button" class="seg-btn ${activeCalFilter === "tutti" ? "active" : ""}" data-agenda-cal-filter="tutti">Tutti (${allEvents.length})</button>
+            ${connectedCals
+              .map((c) => {
+                const cnt = allEvents.filter((ev) => ev.calendar_name === c.name).length;
+                return `<button type="button" class="seg-btn ${activeCalFilter === c.name ? "active" : ""}" data-agenda-cal-filter="${esc(c.name)}" style="display:inline-flex; align-items:center; gap:6px;"><span class="cal-dot" style="background:${esc(c.color)};"></span><span>${esc(c.name)}${cnt ? ` (${cnt})` : ""}</span></button>`;
+              })
+              .join("")}
+          </div>
+        </div>
+      `
+      : "";
 
-    let shortcutHtml = "";
-    if (person) {
-      if (pkg) {
-        const isOpen = helpers.isOpenSinglePackage(pkg);
-        const cat = helpers.inferPackageCategory(pkg);
-        const tone = helpers.getSessionCounterTone(pkg.remaining_sessions, pkg.total_sessions);
-        const isExhausted = !isOpen && pkg.remaining_sessions <= 0;
+    const renderEventRow = (ev) => {
+      const person = matchEventToPerson(ev.summary, people);
+      const pkg = person ? pickBestPackageForEvent(ev.summary, ev.calendar_name, packagesByPerson.get(person.id) || [], helpers) : null;
+      if (pkg) matchedPkgMap.set(pkg.id, pkg);
 
-        const counterPill = isOpen
-          ? `<span class="tag tag-accent pkg-rem-pill num"><strong>${pkg.consumed_sessions}</strong> svolte</span>`
-          : `<span class="tag pkg-rem-pill num" style="color:${tone.text}; background:${tone.bg}; border:1px solid ${tone.border};"><strong>${pkg.remaining_sessions}</strong> rim.</span>`;
+      const evColor = ev.calendar_color || connectedCals[0]?.color || "#1e4976";
+      const isDoneNow = state.agendaDoneUids?.has(ev.uid);
+      const isOngoing = !ev.all_day && ev.date === todayStr && ev.start_time <= nowHm && ev.end_time > nowHm;
 
-        let actionBtn = "";
-        if (isDoneNow) {
-          actionBtn = `
-            <span class="tag tag-success" style="height:28px; padding:0 10px;">Registrata</span>
-            <button type="button" class="btn btn-xs btn-secondary" data-agenda-undo="${pkg.id}" data-agenda-uid="${esc(ev.uid)}" title="Annulla ultima registrazione">${isOpen ? "−1" : "+1"}</button>
+      let shortcutHtml = "";
+      if (person) {
+        if (pkg) {
+          const isOpen = helpers.isOpenSinglePackage(pkg);
+          const tone = helpers.getSessionCounterTone(pkg.remaining_sessions, pkg.total_sessions);
+          const isExhausted = !isOpen && pkg.remaining_sessions <= 0;
+
+          const counterPill = isOpen
+            ? `<span class="tag tag-accent pkg-rem-pill num"><strong>${pkg.consumed_sessions}</strong> svolte</span>`
+            : `<span class="tag pkg-rem-pill num" style="color:${tone.text}; background:${tone.bg}; border:1px solid ${tone.border};"><strong>${pkg.remaining_sessions}</strong> rim.</span>`;
+
+          let actionBtn = "";
+          if (isDoneNow) {
+            actionBtn = `
+              <span class="tag tag-success" style="height:28px; padding:0 10px;">Registrata</span>
+              <button type="button" class="btn btn-xs btn-secondary" data-agenda-undo="${pkg.id}" data-agenda-uid="${esc(ev.uid)}" title="Annulla ultima registrazione">${isOpen ? "−1" : "+1"}</button>
+            `;
+          } else if (isOpen) {
+            actionBtn = `<button type="button" class="btn btn-xs btn-primary" data-agenda-consume="${pkg.id}" data-agenda-uid="${esc(ev.uid)}" data-agenda-is-open="1">+1 seduta</button>`;
+          } else if (isExhausted) {
+            actionBtn = `<button type="button" class="btn btn-xs btn-primary" data-agenda-renew="${pkg.id}">Rinnova</button>`;
+          } else {
+            actionBtn = `<button type="button" class="btn btn-xs btn-primary" data-agenda-consume="${pkg.id}" data-agenda-uid="${esc(ev.uid)}">−1 seduta</button>`;
+          }
+
+          shortcutHtml = `
+            <div class="agenda-shortcut-group">
+              ${counterPill}
+              ${actionBtn}
+              <button type="button" class="btn btn-xs btn-ghost" data-open-person="${person.id}" data-person-tab="pacchetti">Scheda</button>
+            </div>
           `;
-        } else if (isOpen) {
-          actionBtn = `<button type="button" class="btn btn-xs btn-primary" data-agenda-consume="${pkg.id}" data-agenda-uid="${esc(ev.uid)}" data-agenda-is-open="1">+1 seduta</button>`;
-        } else if (isExhausted) {
-          actionBtn = `<button type="button" class="btn btn-xs btn-primary" data-agenda-renew="${pkg.id}">Rinnova</button>`;
         } else {
-          actionBtn = `<button type="button" class="btn btn-xs btn-primary" data-agenda-consume="${pkg.id}" data-agenda-uid="${esc(ev.uid)}">−1 seduta</button>`;
+          shortcutHtml = `
+            <div class="agenda-shortcut-group">
+              <span class="tag" style="color:var(--text-muted);">Nessun pacchetto</span>
+              <button type="button" class="btn btn-xs btn-ghost" data-open-person="${person.id}" data-person-tab="pacchetti">Scheda</button>
+            </div>
+          `;
         }
-
-        shortcutHtml = `
-          <div class="agenda-shortcut-group">
-            ${counterPill}
-            ${actionBtn}
-            <button type="button" class="btn btn-xs btn-ghost" data-open-person="${person.id}" data-person-tab="pacchetti">Scheda</button>
-          </div>
-        `;
-      } else {
-        shortcutHtml = `
-          <div class="agenda-shortcut-group">
-            <span class="tag" style="color:var(--text-muted);">Nessun pacchetto</span>
-            <button type="button" class="btn btn-xs btn-ghost" data-open-person="${person.id}" data-person-tab="pacchetti">Scheda</button>
-          </div>
-        `;
       }
-    }
 
-    const catTag = pkg ? `<span class="tag ${helpers.inferPackageCategory(pkg).badgeClass}" style="font-size:11px;">${esc(helpers.inferPackageCategory(pkg).label)}</span>` : "";
+      const calSourceTag =
+        hasMultipleCals && ev.calendar_name
+          ? `<span class="tag" style="font-size:11px; gap:5px;"><span class="cal-dot" style="background:${esc(evColor)};"></span>${esc(ev.calendar_name)}</span>`
+          : "";
+      const catTag = pkg ? `<span class="tag ${helpers.inferPackageCategory(pkg).badgeClass}" style="font-size:11px;">${esc(helpers.inferPackageCategory(pkg).label)}</span>` : "";
 
-    return `
-      <div class="agenda-event-row ${isOngoing ? "is-now" : ""}">
-        <div class="agenda-time-col num">
-          ${
-            ev.all_day
-              ? `<span class="tag" style="font-size:11px;">Giorno</span>`
-              : `<div class="agenda-time-start">${esc(ev.start_time)}</div><div class="agenda-time-end">${esc(ev.end_time)}</div>`
-          }
-        </div>
-        <div class="agenda-color-bar" style="background:${esc(calColor)};"></div>
-        <div class="agenda-event-main">
-          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-            <span class="agenda-event-title sensitive-data">${esc(ev.summary)}</span>
-            ${catTag}
-            ${isOngoing ? `<span class="tag tag-accent" style="font-size:11px;">In corso</span>` : ""}
+      return `
+        <div class="agenda-event-row ${isOngoing ? "is-now" : ""}">
+          <div class="agenda-time-col num">
+            ${
+              ev.all_day
+                ? `<span class="tag" style="font-size:11px;">Giorno</span>`
+                : `<div class="agenda-time-start">${esc(ev.start_time)}</div><div class="agenda-time-end">${esc(ev.end_time)}</div>`
+            }
           </div>
-          ${
-            ev.location || (person && !pkg)
-              ? `<div class="agenda-event-meta">${[ev.location, person ? `Anagrafica: ${person.first_name} ${person.last_name}` : ""].filter(Boolean).map(esc).join(" · ")}</div>`
-              : ""
-          }
+          <div class="agenda-color-bar" style="background:${esc(evColor)};"></div>
+          <div class="agenda-event-main">
+            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              <span class="agenda-event-title sensitive-data">${esc(ev.summary)}</span>
+              ${calSourceTag}
+              ${catTag}
+              ${isOngoing ? `<span class="tag tag-accent" style="font-size:11px;">In corso</span>` : ""}
+            </div>
+            ${
+              ev.location || (person && !pkg)
+                ? `<div class="agenda-event-meta">${[ev.location, person ? `Anagrafica: ${person.first_name} ${person.last_name}` : ""].filter(Boolean).map(esc).join(" · ")}</div>`
+                : ""
+            }
+          </div>
+          ${shortcutHtml}
         </div>
-        ${shortcutHtml}
-      </div>
-    `;
-  };
+      `;
+    };
 
-  let contentHtml = "";
-  if (view === "day") {
-    contentHtml = `
-      <div class="card card-flush">
-        <div class="toolbar">
-          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <strong style="font-size:14px; color:var(--text);">${esc(headerSubtitle)}</strong>
-            ${anchorDate === todayStr ? `<span class="tag tag-accent">Oggi</span>` : ""}
-            <span class="count-pill num">${events.length}</span>
+    let contentHtml = calFilterBarHtml;
+    if (view === "day") {
+      contentHtml += `
+        <div class="card card-flush">
+          <div class="toolbar">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <strong style="font-size:14px; color:var(--text);">${esc(headerSubtitle)}</strong>
+              ${anchorDate === todayStr ? `<span class="tag tag-accent">Oggi</span>` : ""}
+              <span class="count-pill num">${events.length}</span>
+            </div>
+            <div style="font-size:12px; color:var(--text-muted);" class="num">
+              ${syncedHhMm ? `Sincronizzato alle ${esc(syncedHhMm)}` : ""}
+            </div>
+          </div>
+          <div class="agenda-list">
+            ${
+              events.length
+                ? events.map(renderEventRow).join("")
+                : `<div class="empty-state">Nessun evento per questa giornata${activeCalFilter !== "tutti" ? ` nel calendario «${esc(activeCalFilter)}»` : ""}.</div>`
+            }
+          </div>
+        </div>
+      `;
+    } else {
+      const days = [];
+      for (let i = 0; i < 7; i++) days.push(addDaysYmd(range.from, i));
+      const byDate = new Map();
+      for (const d of days) byDate.set(d, []);
+      for (const ev of events) {
+        if (byDate.has(ev.date)) byDate.get(ev.date).push(ev);
+      }
+
+      contentHtml += `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; padding:0 2px; flex-wrap:wrap; gap:6px;">
+          <div style="font-size:13.5px; font-weight:600; color:var(--text);">
+            Settimana ${esc(headerSubtitle)} <span class="count-pill num">${events.length}</span>
           </div>
           <div style="font-size:12px; color:var(--text-muted);" class="num">
             ${syncedHhMm ? `Sincronizzato alle ${esc(syncedHhMm)}` : ""}
           </div>
         </div>
-        <div class="agenda-list">
-          ${
-            events.length
-              ? events.map(renderEventRow).join("")
-              : `<div class="empty-state">Nessun evento sul calendario «${esc(calName)}» per questa giornata.</div>`
-          }
-        </div>
-      </div>
-    `;
-  } else {
-    // Vista settimanale raggruppata per giorno (Lun..Dom)
-    const days = [];
-    for (let i = 0; i < 7; i++) days.push(addDaysYmd(range.from, i));
-    const byDate = new Map();
-    for (const d of days) byDate.set(d, []);
-    for (const ev of events) {
-      if (byDate.has(ev.date)) byDate.get(ev.date).push(ev);
+        ${days
+          .map((dayYmd) => {
+            const dayEvs = byDate.get(dayYmd) || [];
+            const isToday = dayYmd === todayStr;
+            return `
+              <div class="card card-flush" style="margin-bottom:10px; ${isToday ? "border-color:var(--accent);" : ""}">
+                <div class="toolbar" style="padding:9px 16px; ${isToday ? "background:var(--accent-soft);" : ""}">
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <strong style="font-size:13px; color:${isToday ? "var(--accent)" : "var(--text)"};">${esc(formatDayHeadingIt(dayYmd))}</strong>
+                    ${isToday ? `<span class="tag tag-accent">Oggi</span>` : ""}
+                  </div>
+                  <span style="font-size:12px; color:var(--text-muted);" class="num">${dayEvs.length ? `${dayEvs.length} ${dayEvs.length === 1 ? "evento" : "eventi"}` : "Libero"}</span>
+                </div>
+                ${
+                  dayEvs.length
+                    ? `<div class="agenda-list">${dayEvs.map(renderEventRow).join("")}</div>`
+                    : ""
+                }
+              </div>
+            `;
+          })
+          .join("")}
+      `;
     }
 
-    contentHtml = `
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; padding:0 2px; flex-wrap:wrap; gap:6px;">
-        <div style="font-size:13.5px; font-weight:600; color:var(--text);">
-          Settimana ${esc(headerSubtitle)} <span class="count-pill num">${events.length}</span>
-        </div>
-        <div style="font-size:12px; color:var(--text-muted);" class="num">
-          ${syncedHhMm ? `Sincronizzato alle ${esc(syncedHhMm)}` : ""}
-        </div>
-      </div>
-      ${days
-        .map((dayYmd) => {
-          const dayEvs = byDate.get(dayYmd) || [];
-          const isToday = dayYmd === todayStr;
-          return `
-            <div class="card card-flush" style="margin-bottom:10px; ${isToday ? "border-color:var(--accent);" : ""}">
-              <div class="toolbar" style="padding:9px 16px; ${isToday ? "background:var(--accent-soft);" : ""}">
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <strong style="font-size:13px; color:${isToday ? "var(--accent)" : "var(--text)"};">${esc(formatDayHeadingIt(dayYmd))}</strong>
-                  ${isToday ? `<span class="tag tag-accent">Oggi</span>` : ""}
-                </div>
-                <span style="font-size:12px; color:var(--text-muted);" class="num">${dayEvs.length ? `${dayEvs.length} ${dayEvs.length === 1 ? "evento" : "eventi"}` : "Libero"}</span>
-              </div>
-              ${
-                dayEvs.length
-                  ? `<div class="agenda-list">${dayEvs.map(renderEventRow).join("")}</div>`
-                  : ""
-              }
-            </div>
-          `;
-        })
-        .join("")}
-    `;
-  }
+    if (bodyViewport) {
+      bodyViewport.innerHTML = contentHtml;
 
-  if (bodyViewport) {
-    bodyViewport.innerHTML = contentHtml;
-
-    // Azioni rapide sui pacchetti direttamente dall'Agenda (senza ricaricare l'intero calendario se non serve)
-    bodyViewport.querySelectorAll("[data-agenda-consume]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        const pkgId = Number(btn.getAttribute("data-agenda-consume"));
-        const uid = btn.getAttribute("data-agenda-uid");
-        const isOpen = btn.getAttribute("data-agenda-is-open") === "1";
-        try {
-          await apiFetch(`/api/packages/${pkgId}/movements`, {
-            method: "POST",
-            body: { action: "consume", reason: isOpen ? "Seduta singola svolta (da Agenda)" : "Seduta svolta (da Agenda)" }
-          });
-          if (uid) state.agendaDoneUids.add(uid);
-          // Ricarica i pacchetti aggiornati e ridisegna l'agenda
-          const fresh = await apiFetch("/api/packages");
-          state.packagesCache = fresh.packages || [];
-          await renderAgendaView(container, ctx);
-        } catch (err) {
-          btn.disabled = false;
-          alert(err.message);
-        }
+      bodyViewport.querySelectorAll("[data-agenda-cal-filter]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.agendaCalFilter = btn.getAttribute("data-agenda-cal-filter") || "tutti";
+          paintAgendaEvents();
+        });
       });
-    });
 
-    bodyViewport.querySelectorAll("[data-agenda-undo]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        const pkgId = Number(btn.getAttribute("data-agenda-undo"));
-        const uid = btn.getAttribute("data-agenda-uid");
-        try {
-          await apiFetch(`/api/packages/${pkgId}/movements`, {
-            method: "POST",
-            body: { action: "undo", reason: "Annullamento rapido (da Agenda)" }
-          });
-          if (uid) state.agendaDoneUids.delete(uid);
-          const fresh = await apiFetch("/api/packages");
-          state.packagesCache = fresh.packages || [];
-          await renderAgendaView(container, ctx);
-        } catch (err) {
-          btn.disabled = false;
-          alert(err.message);
-        }
+      bodyViewport.querySelectorAll("[data-agenda-consume]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          const pkgId = Number(btn.getAttribute("data-agenda-consume"));
+          const uid = btn.getAttribute("data-agenda-uid");
+          const isOpen = btn.getAttribute("data-agenda-is-open") === "1";
+          try {
+            await apiFetch(`/api/packages/${pkgId}/movements`, {
+              method: "POST",
+              body: { action: "consume", reason: isOpen ? "Seduta singola svolta (da Agenda)" : "Seduta svolta (da Agenda)" }
+            });
+            if (uid) state.agendaDoneUids.add(uid);
+            const fresh = await apiFetch("/api/packages");
+            state.packagesCache = fresh.packages || [];
+            await renderAgendaView(container, ctx);
+          } catch (err) {
+            btn.disabled = false;
+            alert(err.message);
+          }
+        });
       });
-    });
 
-    bodyViewport.querySelectorAll("[data-agenda-renew]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const pkgId = Number(btn.getAttribute("data-agenda-renew"));
-        const pkg = matchedPkgMap.get(pkgId);
-        if (pkg) ctx.showRenewPackageModal(pkg);
+      bodyViewport.querySelectorAll("[data-agenda-undo]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          const pkgId = Number(btn.getAttribute("data-agenda-undo"));
+          const uid = btn.getAttribute("data-agenda-uid");
+          try {
+            await apiFetch(`/api/packages/${pkgId}/movements`, {
+              method: "POST",
+              body: { action: "undo", reason: "Annullamento rapido (da Agenda)" }
+            });
+            if (uid) state.agendaDoneUids.delete(uid);
+            const fresh = await apiFetch("/api/packages");
+            state.packagesCache = fresh.packages || [];
+            await renderAgendaView(container, ctx);
+          } catch (err) {
+            btn.disabled = false;
+            alert(err.message);
+          }
+        });
       });
-    });
 
-    ctx.bindCommonActionButtons(bodyViewport);
-  }
+      bodyViewport.querySelectorAll("[data-agenda-renew]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const pkgId = Number(btn.getAttribute("data-agenda-renew"));
+          const pkg = matchedPkgMap.get(pkgId);
+          if (pkg) ctx.showRenewPackageModal(pkg);
+        });
+      });
+
+      ctx.bindCommonActionButtons(bodyViewport);
+    }
+  };
+
+  paintAgendaEvents();
 }

@@ -20,15 +20,41 @@ export interface MirrorEvent {
   all_day: boolean;
   location: string;
   notes: string;
+  calendar_name?: string;
+  calendar_color?: string;
 }
 
 export interface StoredAppleCaldavConfig {
   apple_id: string;
   password_enc: string;
-  calendar_url: string;
-  calendar_name: string;
+  calendars?: CalendarInfo[];
+  calendar_url?: string;
+  calendar_name?: string;
   calendar_color?: string;
   updated_at?: string;
+}
+
+export function normalizeStoredCalendars(cfg: StoredAppleCaldavConfig | null | undefined): CalendarInfo[] {
+  if (!cfg) return [];
+  if (Array.isArray(cfg.calendars) && cfg.calendars.length > 0) {
+    return cfg.calendars
+      .filter((c) => c && c.url)
+      .map((c) => ({
+        url: String(c.url),
+        name: String(c.name || "Calendario"),
+        color: String(c.color || "#1e4976"),
+      }));
+  }
+  if (cfg.calendar_url) {
+    return [
+      {
+        url: String(cfg.calendar_url),
+        name: String(cfg.calendar_name || "Apple Calendar"),
+        color: String(cfg.calendar_color || "#1e4976"),
+      },
+    ];
+  }
+  return [];
 }
 
 export function sanitizeUserSettings(raw: string | Record<string, any> | null | undefined): Record<string, any> {
@@ -43,12 +69,14 @@ export function sanitizeUserSettings(raw: string | Record<string, any> | null | 
     obj = { ...raw };
   }
   if (obj.apple_caldav && typeof obj.apple_caldav === "object") {
-    const c = obj.apple_caldav;
+    const c = obj.apple_caldav as StoredAppleCaldavConfig;
+    const cals = normalizeStoredCalendars(c);
     obj.apple_caldav = {
-      configured: Boolean(c.apple_id && c.password_enc && c.calendar_url),
+      configured: Boolean(c.apple_id && c.password_enc && cals.length > 0),
       apple_id: c.apple_id || "",
-      calendar_name: c.calendar_name || "",
-      calendar_color: c.calendar_color || "#1e4976",
+      calendars: cals.map((x) => ({ url: x.url, name: x.name, color: x.color })),
+      calendar_name: cals.map((x) => x.name).join(", "),
+      calendar_color: cals[0]?.color || "#1e4976",
     };
   }
   return obj;

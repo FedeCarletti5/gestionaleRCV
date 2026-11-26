@@ -3,16 +3,16 @@ import {
   inferAnatomicalRegionAndSide,
   renderBodySvgMarkup,
   clientEventToNormalizedSvgCoords
-} from "./body_map.js?v=20";
+} from "./body_map.js?v=21";
 import {
   PCS_ITEMS,
   TSK13_ITEMS,
   computeScaleBreakdown,
   buildClinicalNoteFromBreakdown,
   parseTallyScalesCsv
-} from "./scales.js?v=20";
-import { renderAnamnesisTab } from "./anamnesis.js?v=20";
-import { renderAgendaView, showAppleCalendarConfigModal } from "./agenda.js?v=20";
+} from "./scales.js?v=21";
+import { renderAnamnesisTab } from "./anamnesis.js?v=21";
+import { renderAgendaView, showAppleCalendarConfigModal } from "./agenda.js?v=21";
 
 const SUPABASE_EDGE_API_BASE = "https://exqltoapupbmgxxwqtal.supabase.co/functions/v1/gestionale-api";
 const USE_LOCAL_SERVER =
@@ -44,6 +44,7 @@ const state = {
   packagesStatusFilter: "tutti",
   agendaView: "day",
   agendaDate: "",
+  agendaCalFilter: "tutti",
   agendaDoneUids: new Set(),
   bodyMapDraft: {
     viewSide: "anterior",
@@ -2199,10 +2200,12 @@ async function renderSecurityView(container) {
         <div style="font-size:13px; color:var(--text-secondary);">
           ${
             calCfg?.configured
-              ? `<span style="display:inline-flex; align-items:center; gap:6px;">
-                   <span class="cal-dot" style="background:${esc(calCfg.calendar_color || "#1e4976")};"></span>
-                   <strong>${esc(calCfg.calendar_name || "Lavoro")}</strong> · ${esc(calCfg.apple_id || "")}
-                 </span>`
+              ? `<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                   ${(calCfg.calendars?.length ? calCfg.calendars : [{ name: calCfg.calendar_name || "Lavoro", color: calCfg.calendar_color || "#1e4976" }])
+                     .map((c) => `<span class="tag" style="gap:5px;"><span class="cal-dot" style="background:${esc(c.color || "#1e4976")};"></span><strong>${esc(c.name)}</strong></span>`)
+                     .join("")}
+                   <span style="font-size:12px; color:var(--text-muted);">${esc(calCfg.apple_id || "")}</span>
+                 </div>`
               : "Nessun calendario Apple collegato. Configuralo per visualizzare la tua giornata nella sezione Agenda."
           }
         </div>
